@@ -9,6 +9,14 @@ from codedog.models import PullRequest, Repository, ChangeFile, ChangeStatus
 class TestGithubRetriever(unittest.TestCase):
     def setUp(self):
         # Mock Github client and related objects
+        """
+        Initializes test fixtures for GithubRetriever.
+        
+        Sets up mock objects for the GitHub client, repository, and pull request, including
+        simulated commit, file, and issue data. These fixtures are used to instantiate a
+        GithubRetriever and support various test scenarios such as verifying retriever type,
+        parsing issue numbers, handling errors, and processing changed files.
+        """
         self.mock_github = MagicMock(spec=Github)
         self.mock_repo = MagicMock(spec=GHRepo)
         self.mock_pr = MagicMock(spec=GHPullRequest)
@@ -146,6 +154,12 @@ class TestGithubRetriever(unittest.TestCase):
 
     def test_empty_pr(self):
         # Test PR with no files
+        """
+        Test that retrieving changed files returns an empty list for a pull request with no files.
+        
+        Sets the internal _changed_files list to empty and confirms that the changed_files
+        property reflects this state by returning an empty list.
+        """
         self.retriever._changed_files = []
         
         # Verify files list is empty

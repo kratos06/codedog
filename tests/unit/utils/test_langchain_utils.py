@@ -12,7 +12,12 @@ except ImportError:
 @unittest.skipUnless(HAS_OPENAI, "OpenAI not available")
 class TestLangchainUtils(unittest.TestCase):
     def test_module_imports(self):
-        """Simple test to verify imports work"""
+        """
+        Test that the langchain_utils module is importable and exposes required functions.
+        
+        This test imports the langchain_utils module from the codedog.utils package and asserts the
+        presence of both the load_gpt_llm and load_gpt4_llm functions to confirm the expected API.
+        """
         # This is a basic test to check that our module exists and can be imported
         from codedog.utils import langchain_utils
         self.assertTrue(hasattr(langchain_utils, 'load_gpt_llm'))
@@ -20,7 +25,12 @@ class TestLangchainUtils(unittest.TestCase):
         
     @patch('codedog.utils.langchain_utils.env')
     def test_load_gpt_llm_functions(self, mock_env):
-        """Test that the load functions access environment variables"""
+        """
+        Verify that importing load_gpt_llm does not trigger any environment variable access.
+        
+        This test imports load_gpt_llm and asserts that no calls are made to env.get, ensuring
+        that environment variables are not accessed as a side effect of the import.
+        """
         from codedog.utils.langchain_utils import load_gpt_llm
         
         # Mock the env.get calls

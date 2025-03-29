@@ -50,6 +50,14 @@ class PRSummaryChain(Chain):
 
     @property
     def _chain_type(self) -> str:
+        """
+        Returns the chain type identifier.
+        
+        This method returns a constant string that identifies the chain as a pull request summary chain.
+        
+        Returns:
+            str: The identifier "pull_request_summary_chain".
+        """
         return "pull_request_summary_chain"
 
     @property

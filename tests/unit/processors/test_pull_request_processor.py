@@ -64,6 +64,10 @@ class TestPullRequestProcessor(unittest.TestCase):
         self.assertEqual(files[0].full_name, "src/main.py")
         
     def test_build_change_summaries(self):
+        """Test conversion of inputs and outputs to ChangeSummary objects.
+        
+            Verifies that build_change_summaries returns a single ChangeSummary with the expected file name and summary text.
+            """
         inputs = [
             {"name": "src/main.py", "language": "python", "content": "diff content"}
         ]
