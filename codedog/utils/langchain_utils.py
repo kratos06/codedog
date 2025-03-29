@@ -28,7 +28,15 @@ def load_gpt_llm() -> BaseChatModel:
 
 @lru_cache(maxsize=1)
 def load_gpt4_llm():
-    """Load GPT 4 Model. Make sure your key have access to GPT 4 API. call this function won't check it."""
+    """
+    Load and return a GPT-4 language model instance.
+    
+    This function creates a GPT-4 model based on the environment configuration. If the
+    'AZURE_OPENAI' variable is set, it initializes an AzureChatOpenAI instance configured
+    with Azure-specific parameters; otherwise, it creates a ChatOpenAI instance using the
+    OpenAI API. Note that the function does not verify if the provided API key has access
+    to GPT-4.
+    """
     if env.get("AZURE_OPENAI"):
         llm = AzureChatOpenAI(
             openai_api_type="azure",

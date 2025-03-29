@@ -12,6 +12,15 @@ class TestEndToEndFlow(unittest.TestCase):
     @patch('langchain_openai.chat_models.ChatOpenAI')
     def test_github_to_report_flow(self, mock_chat_openai, mock_github):
         # Setup mocks
+        """
+        Test the GitHub pull request flow for generating a report.
+        
+        This test simulates the end-to-end process of handling a GitHub pull request by creating mock
+        repository and pull request objects, configuring mocked language models, and patching the summary
+        and review chain factories. It verifies that the pull request is correctly summarized and reviewed,
+        and that the reporter compiles the report as expected. The test also asserts that the chain
+        factories and their respective chain calls are invoked exactly once.
+        """
         mock_github_client = MagicMock()
         mock_github.return_value = mock_github_client
         

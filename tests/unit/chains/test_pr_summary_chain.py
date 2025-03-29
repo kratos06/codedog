@@ -9,6 +9,13 @@ from codedog.models import PullRequest, PRSummary, ChangeSummary, PRType
 class TestPRSummaryChain(unittest.TestCase):
     def setUp(self):
         # Mock LLM
+        """
+        Set up test fixtures for PRSummaryChain tests.
+        
+        Initializes mocks for the language model and chain dependencies, creates a real output
+        parser, and instantiates a PRSummaryChain object. Also configures a mock pull request and
+        patches the processor to return predefined file changes and summary materials for testing.
+        """
         self.mock_llm = MagicMock(spec=BaseLanguageModel)
         
         # Mock chains
@@ -35,6 +42,13 @@ class TestPRSummaryChain(unittest.TestCase):
         # Create a real parser instead of a MagicMock
         class TestParser(BaseOutputParser):
             def parse(self, text):
+                """
+                Parses input text to produce a default pull request summary.
+                
+                This stub implementation ignores the input text and always returns a PRSummary
+                with preset values for testing. The summary has an overview of "Parser result",
+                a pull request type set to feature, and major files containing "src/main.py".
+                """
                 return PRSummary(
                     overview="Parser result",
                     pr_type=PRType.feature,
@@ -42,6 +56,11 @@ class TestPRSummaryChain(unittest.TestCase):
                 )
                 
             def get_format_instructions(self):
+                """
+                Return the format instructions.
+                
+                This method returns a static string outlining the expected format for outputs.
+                """
                 return "Format instructions"
                 
         # Create chain with a real parser
@@ -78,6 +97,11 @@ class TestPRSummaryChain(unittest.TestCase):
         
     def test_call(self):
         # Mock run manager
+        """
+        Tests the _call method of PRSummaryChain.
+        
+        Mocks a run manager and verifies that the code summary chain and PR summary chain are each invoked exactly once when calling _call with a mock pull request. The test also asserts that the returned dictionary contains 'pr_summary' and 'code_summaries' keys, with the latter holding exactly one code summary.
+        """
         mock_run_manager = MagicMock()
         mock_run_manager.get_child.return_value = MagicMock()
         
@@ -105,9 +129,26 @@ class TestPRSummaryChain(unittest.TestCase):
         # Create a failing parser
         class FailingParser(BaseOutputParser):
             def parse(self, text):
+                """
+                Parses the input text.
+                
+                This stub implementation always raises a ValueError to indicate that parsing has failed.
+                
+                Args:
+                    text: The input text to be parsed.
+                
+                Raises:
+                    ValueError: Always raised to signal a parsing error.
+                """
                 raise ValueError("Parsing error")
                 
             def get_format_instructions(self):
+                """
+                Return the format instructions.
+                
+                Returns:
+                    str: A static string indicating the format instructions.
+                """
                 return "Format instructions"
         
         # Create a parser instance
