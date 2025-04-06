@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import logging
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.callbacks.manager import (
@@ -12,8 +13,7 @@ from langchain.chains.base import Chain
 from langchain.output_parsers import OutputFixingParser, PydanticOutputParser
 from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.prompts import BasePromptTemplate
-from langchain_core.pydantic_v1 import Field
-from pydantic import BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 
 from codedog.chains.pr_summary.prompts import CODE_SUMMARY_PROMPT, PR_SUMMARY_PROMPT
 from codedog.models import ChangeSummary, PRSummary, PullRequest
@@ -47,11 +47,7 @@ class PRSummaryChain(Chain):
     _input_keys: List[str] = ["pull_request"]
     _output_keys: List[str] = ["pr_summary", "code_summaries"]
 
-    class Config:
-        """Configuration for this pydantic object."""
-
-        extra = "forbid"
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     @property
     def _chain_type(self) -> str:
@@ -179,8 +175,10 @@ class PRSummaryChain(Chain):
     async def _aprocess_result(
         self, pr_summary_output: Dict[str, Any], code_summaries: List[ChangeSummary]
     ) -> Dict[str, Any]:
+        raw_output_text = pr_summary_output.get("text", "[No text found in output]")
+        logging.warning(f"Raw LLM output for PR Summary: {raw_output_text}")
         return {
-            "pr_summary": pr_summary_output["text"],
+            "pr_summary": raw_output_text,
             "code_summaries": code_summaries,
         }
 

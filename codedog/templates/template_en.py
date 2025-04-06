@@ -89,6 +89,25 @@ REPORT_CODE_REVIEW_SEGMENT = """**[{full_name}]({url})**
 
 REPORT_CODE_REVIEW_NO_FEEDBACK = """No suggestions for this PR."""
 
+# --- Code Review Summary Table -----------------------------------------------
+PR_REVIEW_SUMMARY_TABLE = """
+## PR Review Summary
+
+| File | Readability | Efficiency & Performance | Security | Structure & Design | Error Handling | Documentation & Comments | Code Style | Overall |
+|------|-------------|------------------------|----------|-------------------|---------------|-------------------------|-----------|---------|
+{file_scores}
+| **Average** | **{avg_readability:.1f}** | **{avg_efficiency:.1f}** | **{avg_security:.1f}** | **{avg_structure:.1f}** | **{avg_error_handling:.1f}** | **{avg_documentation:.1f}** | **{avg_code_style:.1f}** | **{avg_overall:.1f}** |
+
+### Score Legend:
+- 9.0-10.0: Excellent
+- 7.0-8.9: Very Good
+- 5.0-6.9: Good
+- 3.0-4.9: Needs Improvement
+- 1.0-2.9: Poor
+
+### PR Quality Assessment:
+{quality_assessment}
+"""
 
 # --- Materials ---------------------------------------------------------------
 
