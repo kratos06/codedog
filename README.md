@@ -15,7 +15,7 @@ Codedog leverages Large Language Models (LLMs) like GPT to automatically review 
 *   **Platform Support**: Works with GitHub and GitLab.
 *   **Automated Code Review**: Uses LLMs to analyze code changes, provide feedback, and suggest improvements
 *   **Scoring System**: Evaluates code across multiple dimensions, including correctness, readability, and maintainability
-*   **Multiple LLM Support**: Works with OpenAI (including GPT-4o), Azure OpenAI, DeepSeek, and MindConnect R1 models (see [Models Guide](docs/models.md))
+*   **Multiple LLM Support**: Works with OpenAI (including GPT-4o), Azure OpenAI, DeepSeek, and DeepSeek R1 models (see [Models Guide](docs/models.md))
 *   **Email Notifications**: Sends code review reports via email (see [Email Setup Guide](docs/email_setup.md))
 *   **Commit-Triggered Reviews**: Automatically reviews code when commits are made (see [Commit Review Guide](docs/commit_review.md))
 *   **Developer Evaluation**: Evaluates a developer's code over a specific time period
@@ -108,9 +108,6 @@ OPENAI_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 # DEEPSEEK_MODEL="deepseek-r1"
 # DEEPSEEK_R1_API_BASE="https://your-r1-endpoint"
 
-# LLM (MindConnect R1 example)
-# MINDCONNECT_API_KEY="your_mindconnect_api_key"
-
 # Model selection (optional)
 CODE_SUMMARY_MODEL="gpt-3.5"
 PR_SUMMARY_MODEL="gpt-4"
@@ -141,7 +138,14 @@ The `README.md` in the project root (and `codedog/__init__.py`) contains a quick
 
 4.  **Run the Script**: Execute the script within the Poetry environment:
     ```bash
-    poetry run python run_codedog.py
+    # For GitHub PR review
+    poetry run python run_codedog.py pr "owner/repo" 123
+
+    # For GitLab MR review
+    poetry run python run_codedog.py pr "owner/repo" 123 --platform gitlab
+
+    # For GitLab MR review with custom GitLab instance
+    poetry run python run_codedog.py pr "owner/repo" 123 --platform gitlab --gitlab-url "https://your.gitlab.instance.com"
     ```
 
 This will:
@@ -150,6 +154,30 @@ This will:
 *   Use the configured LLMs to generate code summaries and a PR summary.
 *   Use the configured LLM to generate code review suggestions.
 *   Print a formatted Markdown report to the console.
+
+## GitLab Integration
+
+Codedog fully supports GitLab integration for reviewing merge requests. To use GitLab integration:
+
+1. **Set up GitLab Token**: Generate a personal access token with `api` scope from your GitLab account settings.
+
+2. **Configure Environment Variables**: Add the following to your `.env` file:
+   ```
+   GITLAB_TOKEN="your_gitlab_personal_access_token"
+   GITLAB_URL="https://gitlab.com"  # Or your self-hosted GitLab URL
+   ```
+
+3. **Run GitLab MR Review**: Use the following command to review a GitLab merge request:
+   ```bash
+   python run_codedog.py pr "owner/repo" 123 --platform gitlab
+   ```
+
+   Replace `owner/repo` with your GitLab project path and `123` with your merge request IID.
+
+4. **Self-hosted GitLab**: If you're using a self-hosted GitLab instance, specify the URL:
+   ```bash
+   python run_codedog.py pr "owner/repo" 123 --platform gitlab --gitlab-url "https://your.gitlab.instance.com"
+   ```
 
 ## Running Tests
 
