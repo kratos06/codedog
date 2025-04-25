@@ -14,6 +14,39 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import math
 import tiktoken  # 用于精确计算token数量
 
+# Function to log LLM inputs and outputs to separate files
+def log_llm_interaction(prompt, response, interaction_type="default"):
+    """
+    Log LLM prompts to LLM_in.log and responses to LLM_out.log
+
+    Args:
+        prompt: The prompt sent to the LLM
+        response: The response received from the LLM
+        interaction_type: A label to identify the type of interaction (e.g., "file_evaluation", "summary")
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+
+    # Log the prompt
+    with open("logs/LLM_in.log", "a", encoding="utf-8") as f:
+        f.write(f"\n\n{'='*50}\n")
+        f.write(f"TIMESTAMP: {timestamp}\n")
+        f.write(f"TYPE: {interaction_type}\n")
+        f.write(f"{'='*50}\n\n")
+        f.write(prompt)
+        f.write("\n\n")
+
+    # Log the response
+    with open("logs/LLM_out.log", "a", encoding="utf-8") as f:
+        f.write(f"\n\n{'='*50}\n")
+        f.write(f"TIMESTAMP: {timestamp}\n")
+        f.write(f"TYPE: {interaction_type}\n")
+        f.write(f"{'='*50}\n\n")
+        f.write(response)
+        f.write("\n\n")
+
 # 导入 grimoire 模板
 from codedog.templates.grimoire_en import CODE_SUGGESTION
 from codedog.templates.grimoire_cn import GrimoireCn
@@ -57,11 +90,27 @@ class CodeEvaluation(BaseModel):
         score_fields = ["readability", "efficiency", "security", "structure",
                        "error_handling", "documentation", "code_style"]
 
-        for field in score_fields:
-            if field in data and isinstance(data[field], float):
-                data[field] = round(data[field])
+        # Log the original data
+        logger.info(f"Creating CodeEvaluation from data: {data}")
+        print(f"DEBUG: Creating CodeEvaluation from data: {data}")
 
-        return cls(**data)
+        # Make a copy of the data to avoid modifying the original
+        data_copy = data.copy()
+
+        for field in score_fields:
+            if field in data_copy and isinstance(data_copy[field], float):
+                # Log the conversion
+                logger.info(f"Converting {field} from float {data_copy[field]} to int {round(data_copy[field])}")
+                data_copy[field] = round(data_copy[field])
+
+        # Create the instance
+        instance = cls(**data_copy)
+
+        # Log the created instance
+        logger.info(f"Created CodeEvaluation instance: {instance}")
+        print(f"DEBUG: Created CodeEvaluation instance: {instance}")
+
+        return instance
 
 
 @dataclass(frozen=True)  # Make it immutable and hashable
@@ -699,6 +748,7 @@ class DiffEvaluator:
         try:
             # 记录原始结果
             logger.info(f"Validating scores from result: {result}")
+            print(f"DEBUG: Original LLM result: {result}")
 
             # 检查并处理不同格式的评分结果
             normalized_result = {}
@@ -749,7 +799,7 @@ class DiffEvaluator:
                             elif "evaluation" in result:
                                 normalized_result["comments"] = result["evaluation"]
                             else:
-                                normalized_result["comments"] = "无评价意见"
+                                normalized_result["comments"] = "No evaluation comments were provided by the model. The code may require manual review."
                         elif field in result and isinstance(result[field], dict) and "score" in result[field]:
                             normalized_result[field] = result[field]["score"]
                 else:
@@ -795,7 +845,7 @@ class DiffEvaluator:
                                 normalized_result["comments"] = result[alt_field]
                                 break
                         else:
-                            normalized_result["comments"] = "无评价意见"
+                            normalized_result["comments"] = "No evaluation comments were provided by the model. The code may require manual review."
 
                 # 处理嵌套的评论结构 - 无论是否在上面的循环中设置
                 if field == "comments" and isinstance(normalized_result.get("comments"), dict):
@@ -822,17 +872,44 @@ class DiffEvaluator:
 
                     normalized_result["comments"] = comments_str
                 elif field == "overall_score":
-                    # 如果缺少总分，计算其他分数的平均值
-                    score_fields = ["readability", "efficiency", "security", "structure",
-                                  "error_handling", "documentation", "code_style"]
-                    available_scores = [normalized_result.get(f, 5) for f in score_fields if f in normalized_result]
-                    if available_scores:
-                        normalized_result["overall_score"] = round(sum(available_scores) / len(available_scores), 1)
+                    # 检查原始结果中是否有overall_score字段
+                    if "overall_score" in result:
+                        # 使用原始结果中的值
+                        normalized_result["overall_score"] = result["overall_score"]
                     else:
-                        normalized_result["overall_score"] = 5.0
+                        # 如果原始结果中没有该字段，计算其他分数的平均值
+                        logger.warning("overall_score not found in original result, calculating from other scores")
+                        score_fields = ["readability", "efficiency", "security", "structure",
+                                      "error_handling", "documentation", "code_style"]
+                        # 使用原始结果中的值计算平均分
+                        available_scores = []
+                        for f in score_fields:
+                            if f in result:
+                                try:
+                                    if isinstance(result[f], str):
+                                        available_scores.append(float(result[f].strip()))
+                                    else:
+                                        available_scores.append(float(result[f]))
+                                except (ValueError, TypeError):
+                                    # 如果转换失败，跳过该字段
+                                    pass
+                            elif f in normalized_result:
+                                available_scores.append(normalized_result[f])
+
+                        if available_scores:
+                            normalized_result["overall_score"] = round(sum(available_scores) / len(available_scores), 1)
+                        else:
+                            logger.warning("No scores available to calculate overall_score, using default value 5.0")
+                            normalized_result["overall_score"] = 5.0
                 else:
-                    # 对于其他评分字段，使用默认值5
-                    normalized_result[field] = 5
+                    # 检查原始结果中是否有该字段
+                    if field in result:
+                        # 使用原始结果中的值
+                        normalized_result[field] = result[field]
+                    else:
+                        # 如果原始结果中没有该字段，才使用默认值5
+                        logger.warning(f"Field {field} not found in original result, using default value 5")
+                        normalized_result[field] = 5
 
             # 确保分数在有效范围内
             score_fields = ["readability", "efficiency", "security", "structure",
@@ -849,7 +926,24 @@ class DiffEvaluator:
 
                     normalized_result[field] = max(1, min(10, score))
                 except (ValueError, TypeError):
-                    normalized_result[field] = 5
+                    # 检查原始结果中是否有该字段
+                    if field in result:
+                        # 尝试使用原始结果中的值
+                        try:
+                            # 尝试转换为整数
+                            if isinstance(result[field], str):
+                                normalized_result[field] = int(result[field].strip())
+                            elif isinstance(result[field], float):
+                                normalized_result[field] = round(result[field])
+                            else:
+                                normalized_result[field] = result[field]
+                        except (ValueError, TypeError):
+                            # 如果转换失败，使用原始值
+                            normalized_result[field] = result[field]
+                    else:
+                        # 如果原始结果中没有该字段，才使用默认值5
+                        logger.warning(f"Field {field} not found in original result or could not be parsed, using default value 5")
+                        normalized_result[field] = 5
 
             # 确保overall_score是浮点数并在1-10范围内
             try:
@@ -859,15 +953,31 @@ class DiffEvaluator:
 
                 normalized_result["overall_score"] = max(1.0, min(10.0, float(overall)))
             except (ValueError, TypeError):
-                normalized_result["overall_score"] = 5.0
+                # 检查原始结果中是否有overall_score字段
+                if "overall_score" in result:
+                    # 尝试使用原始结果中的值
+                    try:
+                        # 尝试转换为浮点数
+                        if isinstance(result["overall_score"], str):
+                            normalized_result["overall_score"] = float(result["overall_score"].strip())
+                        else:
+                            normalized_result["overall_score"] = float(result["overall_score"])
+                    except (ValueError, TypeError):
+                        # 如果转换失败，使用原始值
+                        normalized_result["overall_score"] = result["overall_score"]
+                else:
+                    # 如果原始结果中没有该字段，才使用默认值5.0
+                    logger.warning("overall_score not found in original result or could not be parsed, using default value 5.0")
+                    normalized_result["overall_score"] = 5.0
 
-            # 检查所有分数是否相同，如果是，则稍微调整以增加差异性
-            scores = [normalized_result[field] for field in score_fields]
-            if len(set(scores)) <= 1:
-                # 所有分数相同，添加一些随机变化
-                for field in score_fields[:3]:  # 只修改前几个字段
-                    adjustment = random.choice([-1, 1])
-                    normalized_result[field] = max(1, min(10, normalized_result[field] + adjustment))
+            # 禁用分数调整功能，保持LLM原始输出
+            # 原始代码：检查所有分数是否相同，如果是，则稍微调整以增加差异性
+            # scores = [normalized_result[field] for field in score_fields]
+            # if len(set(scores)) <= 1:
+            #     # 所有分数相同，添加一些随机变化
+            #     for field in score_fields[:3]:  # 只修改前几个字段
+            #         adjustment = random.choice([-1, 1])
+            #         normalized_result[field] = max(1, min(10, normalized_result[field] + adjustment))
 
             # 确保comments字段是字符串类型
             if "comments" in normalized_result:
@@ -898,16 +1008,44 @@ class DiffEvaluator:
                             normalized_result["comments"] = str(normalized_result["comments"])
                     except Exception as e:
                         logger.error(f"Error converting comments to string: {e}")
-                        normalized_result["comments"] = f"评论转换错误: {str(e)}"
+                        normalized_result["comments"] = f"Error converting evaluation comments: {str(e)}. The code may require manual review."
 
-                # 确保评论不为空
-                if not normalized_result["comments"]:
-                    normalized_result["comments"] = "无评价意见"
+                # 确保评论不为空且不是简单的数字或过短的字符串
+                if not normalized_result["comments"] or normalized_result["comments"].strip().isdigit() or len(normalized_result["comments"].strip()) < 10:
+                    logger.warning(f"Comments field is empty, a digit, or too short: '{normalized_result['comments']}'. Attempting to extract more detailed comments from the original result.")
+
+                    # 尝试从原始结果中提取更详细的评论
+                    detailed_comments = None
+
+                    # 检查原始结果中是否有更详细的评论
+                    if "comments" in result and isinstance(result["comments"], str) and len(result["comments"]) > 10 and not result["comments"].strip().isdigit():
+                        detailed_comments = result["comments"]
+                    elif "evaluation" in result and isinstance(result["evaluation"], str) and len(result["evaluation"]) > 10:
+                        detailed_comments = result["evaluation"]
+                    elif "analysis" in result and isinstance(result["analysis"], str) and len(result["analysis"]) > 10:
+                        detailed_comments = result["analysis"]
+
+                    # 如果找到了更详细的评论，使用它
+                    if detailed_comments:
+                        logger.info(f"Found more detailed comments in the original result: {detailed_comments[:100]}...")
+                        normalized_result["comments"] = detailed_comments
+                    else:
+                        normalized_result["comments"] = "No evaluation comments were provided by the model. The code may require manual review."
 
             # 使用from_dict方法创建CodeEvaluation实例进行最终验证
             try:
+                # 记录最终结果
+                logger.info(f"Final normalized result: {normalized_result}")
+                print(f"DEBUG: Final normalized result: {normalized_result}")
+
                 evaluation = CodeEvaluation.from_dict(normalized_result)
-                return evaluation.model_dump()
+                final_result = evaluation.model_dump()
+
+                # 记录最终模型结果
+                logger.info(f"Final model result: {final_result}")
+                print(f"DEBUG: Final model result: {final_result}")
+
+                return final_result
             except Exception as e:
                 logger.error(f"Error creating CodeEvaluation: {e}")
                 logger.error(f"Normalized result: {normalized_result}")
@@ -937,7 +1075,7 @@ class DiffEvaluator:
             "code_style": 5,
             "overall_score": 5.0,
             "estimated_hours": 0.0,
-            "comments": error_message
+            "comments": f"Evaluation failed: {error_message}. The code may require manual review."
         }
 
         logger.info(f"Default scores generated: {default_scores}")
@@ -1187,7 +1325,7 @@ class DiffEvaluator:
                     "documentation": 5,
                     "code_style": 5,
                     "overall_score": 5.0,
-                    "comments": f"无法评估代码: {comment}"
+                    "comments": f"The code could not be evaluated due to content issues: {comment}"
                 }
                 return json.dumps(default_json)
 
@@ -1226,7 +1364,20 @@ class DiffEvaluator:
                 if improvement_match:
                     scores_dict['comments'] = improvement_match.group(1).strip()
                 else:
-                    scores_dict['comments'] = "No detailed analysis provided."
+                    # Try to extract any meaningful content from the response
+                    overview_match = re.search(r'## Code Functionality Overview\s*\n([\s\S]*?)(?:\n##|\Z)', text)
+                    if overview_match:
+                        scores_dict['comments'] = overview_match.group(1).strip()
+                    else:
+                        # Look for any section that might contain useful information
+                        for section_title in ["Summary", "Overview", "Analysis", "Evaluation", "Review", "Feedback"]:
+                            section_match = re.search(f'## {section_title}\s*\n([\s\S]*?)(?:\n##|\Z)', text, re.IGNORECASE)
+                            if section_match:
+                                scores_dict['comments'] = section_match.group(1).strip()
+                                break
+                        else:
+                            # If no sections found, use the first 500 characters of the response
+                            scores_dict['comments'] = "No detailed analysis section found. Response excerpt: " + text[:500].strip()
 
             # 转换为 JSON 字符串
             if scores_dict and len(scores_dict) >= 8:  # 至少包含7个评分项和评论
@@ -1298,7 +1449,7 @@ class DiffEvaluator:
                 "code_style": 5,
                 "overall_score": 5.0,
                 "estimated_hours": 0.0,
-                "comments": "API返回空响应，显示默认分数。"
+                "comments": "No evaluation comments available. The API returned an empty response, so default scores are shown."
             }
             logger.warning("Returning default scores due to empty response")
             return json.dumps(default_scores)
@@ -1327,7 +1478,7 @@ class DiffEvaluator:
                     "code_style": 5,
                     "overall_score": 5.0,
                     "estimated_hours": 0.0,
-                    "comments": f"API返回错误消息: {json_str[:200]}..."
+                    "comments": f"The evaluation could not be completed. The API returned an error message: {json_str[:200]}..."
                 }
                 return json.dumps(default_scores)
 
@@ -1445,8 +1596,15 @@ class DiffEvaluator:
                         break
 
                 if "comments" not in scores:
-                    # 使用原始文本的一部分作为评论
-                    scores["comments"] = "JSON解析错误，显示提取的分数。原始响应: " + original_json[:200] + "..."
+                    # Try to extract any meaningful content from the response
+                    for section_title in ["Analysis", "Evaluation", "Review", "Feedback", "Comments", "Summary", "Overview"]:
+                        section_match = re.search(f'{section_title}[:\s]+([\s\S]*?)(?=\n\w+[:\s]|\Z)', original_json, re.IGNORECASE)
+                        if section_match:
+                            scores["comments"] = section_match.group(1).strip()
+                            break
+                    else:
+                        # If no sections found, use the original text
+                        scores["comments"] = "Extracted scores from response, but could not find detailed comments. Response excerpt: " + original_json[:300] + "..."
 
                 # 转换为JSON字符串
                 return json.dumps(scores)
@@ -1466,7 +1624,7 @@ class DiffEvaluator:
                     "code_style": 5,
                     "overall_score": 5.0,
                     "estimated_hours": 0.0,
-                    "comments": f"JSON解析错误，显示默认分数。错误: {str(e)}"
+                    "comments": f"Unable to extract detailed evaluation comments. There was an error parsing the JSON response: {str(e)}. The code may require manual review."
                 }
                 return json.dumps(default_scores)
 
@@ -1620,6 +1778,10 @@ class DiffEvaluator:
                     print(f"DEBUG: User input first 100 chars: '{user_message[:100]}...'")
                     print(f"DEBUG: User input length: {len(user_message)}")
 
+                    # Log the prompt to LLM_in.log
+                    user_message = messages[0].content if len(messages) > 0 else "No user message"
+                    log_llm_interaction(user_message, "", interaction_type="diff_chunk_evaluation_prompt")
+
                     # 调用模型
                     response = await self.model.agenerate(messages=[messages])
                     self._last_request_time = time.time()
@@ -1627,8 +1789,8 @@ class DiffEvaluator:
                     # 获取响应文本
                     generated_text = response.generations[0][0].text
 
-                    # 打印原始响应用于调试
-                    print(f"\n==== RAW OPENAI RESPONSE ====\n{generated_text}\n==== END RESPONSE ====\n")
+                    # Log the response to LLM_out.log
+                    log_llm_interaction("", generated_text, interaction_type="diff_chunk_evaluation_response")
 
                 # 解析响应
                 try:
@@ -1878,6 +2040,11 @@ class DiffEvaluator:
 
             logger.info(f"Sending request to model for {file_path}")
             start_time = time.time()
+            # Log the prompt to LLM_in.log
+            user_message = messages[0].content
+            log_llm_interaction(user_message, "", interaction_type="file_evaluation_prompt")
+
+            # Call the model
             response = await self.model.agenerate(messages=[messages])
             end_time = time.time()
             logger.info(f"Model response received in {end_time - start_time:.2f} seconds")
@@ -1885,9 +2052,8 @@ class DiffEvaluator:
             generated_text = response.generations[0][0].text
             logger.debug(f"Response size: {len(generated_text)} characters")
 
-            # 打印原始响应用于调试
-            logger.debug(f"Raw model response (first 200 chars): {generated_text[:200]}...")
-            print(f"\n==== RAW OPENAI RESPONSE ====\n{generated_text[:200]}...\n==== END RESPONSE ====\n")
+            # Log the response to LLM_out.log
+            log_llm_interaction("", generated_text, interaction_type="file_evaluation_response")
 
             # 尝试提取JSON部分
             logger.info(f"Extracting JSON from response for {file_path}")
@@ -1969,8 +2135,8 @@ class DiffEvaluator:
         most_common_score = max(score_counts, key=score_counts.get)
         most_common_count = score_counts[most_common_score]
 
-        # 如果所有分数都相同，或者大部分分数相同，则根据文件类型调整分数
-        if most_common_count >= 5:  # 如果至少5个分数相同
+        # 禁用分数调整功能，保持LLM原始输出
+        if False:  # 原始条件: most_common_count >= 5
             logger.warning(f"Most scores are identical ({most_common_score}, count: {most_common_count}), adjusting for variety")
             print(f"检测到评分缺乏差异性 ({most_common_score}，{most_common_count}个相同)，正在调整评分使其更具差异性")
 
@@ -2058,7 +2224,38 @@ class DiffEvaluator:
                 eval_data["code_style"]
             ]) / 7, 1)
 
-            logger.info(f"Adjusted scores: {eval_data}")
+            # 记录原始分数和调整后的分数
+            original_scores = {
+                "readability": most_common_score,
+                "efficiency": most_common_score,
+                "security": most_common_score,
+                "structure": most_common_score,
+                "error_handling": most_common_score,
+                "documentation": most_common_score,
+                "code_style": most_common_score,
+                "overall_score": most_common_score
+            }
+
+            adjusted_scores = {
+                "readability": eval_data["readability"],
+                "efficiency": eval_data["efficiency"],
+                "security": eval_data["security"],
+                "structure": eval_data["structure"],
+                "error_handling": eval_data["error_handling"],
+                "documentation": eval_data["documentation"],
+                "code_style": eval_data["code_style"],
+                "overall_score": eval_data["overall_score"]
+            }
+
+            logger.info(f"Original scores: {original_scores}")
+            logger.info(f"Adjusted scores: {adjusted_scores}")
+
+            # 在评论中添加分数调整说明
+            adjustment_note = f"\n\n**Note**: Scores have been adjusted for differentiation. Original scores were all {most_common_score}."
+            if eval_data["comments"]:
+                eval_data["comments"] += adjustment_note
+            else:
+                eval_data["comments"] = adjustment_note
 
         # Calculate estimated hours if not provided
         if "estimated_hours" not in eval_data or not eval_data["estimated_hours"]:
@@ -2164,11 +2361,16 @@ class DiffEvaluator:
             user_message = messages[0].content if len(messages) > 0 else "No user message"
             print(f"DEBUG: User input first 20 chars: '{user_message[:20]}...'")
 
+            # Log the prompt to LLM_in.log
+            user_message = messages[0].content
+            log_llm_interaction(user_message, "", interaction_type="file_evaluation_prompt")
+
+            # Call the model
             response = await self.model.agenerate(messages=[messages])
             generated_text = response.generations[0][0].text
 
-            # 打印原始响应用于调试
-            print(f"\n==== RAW OPENAI RESPONSE ====\n{generated_text[:200]}...\n==== END RESPONSE ====\n")
+            # Log the response to LLM_out.log
+            log_llm_interaction("", generated_text, interaction_type="file_evaluation_response")
 
             # 尝试提取JSON部分
             json_str = self._extract_json(generated_text)
@@ -2272,8 +2474,8 @@ class DiffEvaluator:
         most_common_score = max(score_counts, key=score_counts.get)
         most_common_count = score_counts[most_common_score]
 
-        # 如果所有分数都相同，或者大部分分数相同，则根据文件类型调整分数
-        if most_common_count >= 5:  # 如果至少5个分数相同
+        # 禁用分数调整功能，保持LLM原始输出
+        if False:  # 原始条件: most_common_count >= 5
             logger.warning(f"Most scores are identical ({most_common_score}, count: {most_common_count}), adjusting for variety")
             print(f"检测到评分缺乏差异性 ({most_common_score}，{most_common_count}个相同)，正在调整评分使其更具差异性")
 
@@ -2361,7 +2563,38 @@ class DiffEvaluator:
                 evaluation.code_style
             ]) / 7, 1)
 
-            logger.info(f"Adjusted scores: {evaluation}")
+            # 记录原始分数和调整后的分数
+            original_scores = {
+                "readability": most_common_score,
+                "efficiency": most_common_score,
+                "security": most_common_score,
+                "structure": most_common_score,
+                "error_handling": most_common_score,
+                "documentation": most_common_score,
+                "code_style": most_common_score,
+                "overall_score": most_common_score
+            }
+
+            adjusted_scores = {
+                "readability": evaluation.readability,
+                "efficiency": evaluation.efficiency,
+                "security": evaluation.security,
+                "structure": evaluation.structure,
+                "error_handling": evaluation.error_handling,
+                "documentation": evaluation.documentation,
+                "code_style": evaluation.code_style,
+                "overall_score": evaluation.overall_score
+            }
+
+            logger.info(f"Original scores: {original_scores}")
+            logger.info(f"Adjusted scores: {adjusted_scores}")
+
+            # 在评论中添加分数调整说明
+            adjustment_note = f"\n\n**Note**: Scores have been adjusted for differentiation. Original scores were all {most_common_score}."
+            if evaluation.comments:
+                evaluation.comments += adjustment_note
+            else:
+                evaluation.comments = adjustment_note
 
         # 创建并返回评价结果
         return FileEvaluationResult(
@@ -2655,11 +2888,19 @@ Please format your response as JSON with the following fields:
 
             logger.info("Sending request to model for combined diff evaluation")
             start_time = time.time()
+            # Log the prompt to LLM_in.log
+            user_message = messages[0].content
+            log_llm_interaction(user_message, "", interaction_type="commit_evaluation_prompt")
+
+            # Call the model
             response = await self.model.agenerate(messages=[messages])
             end_time = time.time()
             logger.info(f"Model response received in {end_time - start_time:.2f} seconds")
 
             generated_text = response.generations[0][0].text
+
+            # Log the response to LLM_out.log
+            log_llm_interaction("", generated_text, interaction_type="commit_evaluation_response")
             logger.debug(f"Response size: {len(generated_text)} characters")
 
             # Extract JSON from response
@@ -2829,11 +3070,19 @@ Please format your response as JSON with the following fields:
         messages = [HumanMessage(content=summary_prompt)]
         logger.info("Sending summary request to model")
         start_time = time.time()
+        # Log the prompt to LLM_in.log
+        user_message = messages[0].content
+        log_llm_interaction(user_message, "", interaction_type="summary_prompt")
+
+        # Call the model
         summary_response = await self.model.agenerate(messages=[messages])
         end_time = time.time()
         logger.info(f"Summary response received in {end_time - start_time:.2f} seconds")
 
         summary_text = summary_response.generations[0][0].text
+
+        # Log the response to LLM_out.log
+        log_llm_interaction("", summary_text, interaction_type="summary_response")
         logger.debug(f"Summary text size: {len(summary_text)} characters")
         logger.debug(f"Summary text (first 100 chars): {summary_text[:100]}...")
 
@@ -2953,7 +3202,6 @@ def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult])
     # Add total estimated working hours if available
     if total_scores["estimated_hours"] > 0:
         markdown += f"- **Total Estimated Working Hours**: {total_scores['estimated_hours']:.1f} hours\n"
-        markdown += f"- **Average Estimated Hours per File**: {avg_scores['estimated_hours']:.1f} hours\n"
 
     markdown += "\n"
 
@@ -3017,7 +3265,22 @@ def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult])
             markdown += f"| **Estimated Working Hours** | **{eval.estimated_hours:.1f}** |\n"
 
         markdown += "\n**Comments**:\n\n"
-        markdown += f"{eval.comments}\n\n"
+
+        # Check if the comments contain the adjustment note
+        if "**Note**: Scores have been adjusted for differentiation" in eval.comments:
+            # Split the comments to separate the adjustment note
+            comments_parts = eval.comments.split("**Note**: Scores have been adjusted for differentiation")
+            main_comments = comments_parts[0].strip()
+            adjustment_note = "**Note**: Scores have been adjusted for differentiation" + comments_parts[1]
+
+            # Add the main comments
+            markdown += f"{main_comments}\n\n"
+
+            # Add the adjustment note with special formatting
+            markdown += f"<div style='background-color: #f8f9fa; padding: 10px; border-left: 4px solid #007bff; margin-bottom: 10px;'>{adjustment_note}</div>\n\n"
+        else:
+            markdown += f"{eval.comments}\n\n"
+
         markdown += "---\n\n"
 
     return markdown
