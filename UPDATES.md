@@ -2,12 +2,18 @@
 
 ## Latest Updates
 
-### 1. Improved Scoring System
+### 1. Repository Evaluation Command
+- Added new `repo-eval` command to evaluate all commits in a repository for all committers
+- Implemented incremental report generation - each committer's report is saved immediately after evaluation
+- Added summary report with links to individual committer reports
+- Added error handling to continue evaluation even if one committer's evaluation fails
+
+### 2. Improved Scoring System
 - Enhanced the scoring system to provide more accurate and comprehensive code evaluations
 - Added detailed scoring criteria for each dimension
 - Implemented weighted scoring for different aspects of code quality
 
-### 2. Evaluation Dimensions
+### 3. Evaluation Dimensions
 The evaluation now covers the following dimensions:
 - Readability: Code clarity and understandability
 - Efficiency & Performance: Code execution speed and resource usage
@@ -65,7 +71,19 @@ The evaluation now covers the following dimensions:
    python run_codedog.py pr "repository_name" MR_number --platform gitlab --gitlab-url "https://your.gitlab.instance.com"
    ```
 
-3. **Set up Git Hooks**:
+3. **Evaluate Repository**:
+   ```bash
+   # Evaluate all commits in a GitHub repository
+   python run_codedog.py repo-eval "repository_name" --start-date YYYY-MM-DD --end-date YYYY-MM-DD --platform github
+
+   # Evaluate all commits in a GitLab repository
+   python run_codedog.py repo-eval "repository_name" --start-date YYYY-MM-DD --end-date YYYY-MM-DD --platform gitlab
+
+   # Evaluate with specific model
+   python run_codedog.py repo-eval "repository_name" --start-date YYYY-MM-DD --end-date YYYY-MM-DD --platform gitlab --model deepseek
+   ```
+
+4. **Set up Git Hooks**:
    ```bash
    python run_codedog.py setup-hooks
    ```
@@ -81,3 +99,8 @@ The evaluation now covers the following dimensions:
 2. Develop more specialized scoring criteria for different file types
 3. Further improve report presentation with visual charts
 4. Deeper integration with CI/CD systems
+
+## TODO
+1. Implement better handling of large diffs in GitLab API (currently limited to 20 files per diff)
+2. Add support for local repositories in repo-eval command
+3. Add more detailed statistics in the summary report

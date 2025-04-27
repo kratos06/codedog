@@ -1038,57 +1038,104 @@ async def evaluate_repository_code(
         # Timing and statistics
         start_time = time.time()
 
-        with get_openai_callback() as cb:
-            # Perform evaluation
-            print(f"Evaluating code commits for {author}...")
-            evaluation_results = await evaluator.evaluate_commits(commits, commit_file_diffs)
+        try:
+            with get_openai_callback() as cb:
+                # Perform evaluation
+                print(f"Evaluating code commits for {author}...")
+                evaluation_results = await evaluator.evaluate_commits(commits, commit_file_diffs)
 
-            # Generate Markdown report
-            report = generate_evaluation_markdown(evaluation_results)
+                # Generate Markdown report
+                report = generate_evaluation_markdown(evaluation_results)
 
-            # Calculate cost and tokens
-            total_cost = cb.total_cost
-            total_tokens = cb.total_tokens
+                # Calculate cost and tokens
+                total_cost = cb.total_cost
+                total_tokens = cb.total_tokens
 
-        # Add evaluation statistics
-        elapsed_time = time.time() - start_time
-        telemetry_info = (
-            f"\n## Evaluation Statistics\n\n"
-            f"- **Evaluation Model**: {model_name}\n"
-            f"- **Evaluation Time**: {elapsed_time:.2f} seconds\n"
-            f"- **Tokens Used**: {total_tokens}\n"
-            f"- **Cost**: ${total_cost:.4f}\n"
-            f"\n## Code Statistics\n\n"
-            f"- **Total Files Modified**: {code_stats.get('total_files', 0)}\n"
-            f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
-            f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
-            f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
-        )
+            # Add evaluation statistics
+            elapsed_time = time.time() - start_time
+            telemetry_info = (
+                f"\n## Evaluation Statistics\n\n"
+                f"- **Evaluation Model**: {model_name}\n"
+                f"- **Evaluation Time**: {elapsed_time:.2f} seconds\n"
+                f"- **Tokens Used**: {total_tokens}\n"
+                f"- **Cost**: ${total_cost:.4f}\n"
+                f"\n## Code Statistics\n\n"
+                f"- **Total Files Modified**: {code_stats.get('total_files', 0)}\n"
+                f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
+                f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
+                f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
+            )
 
-        report += telemetry_info
+            report += telemetry_info
 
-        # Save report
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(report)
-        print(f"Report for {author} saved to {output_file}")
+            # Save report immediately after evaluation is complete
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(report)
 
-        # Add to author reports dictionary
-        author_reports[author] = output_file
+            # Add to author reports dictionary
+            author_reports[author] = output_file
 
-        # Add to summary report
-        summary_report += f"### {author}\n\n"
-        summary_report += f"- **Commits**: {len(commits)}\n"
-        summary_report += f"- **Files Modified**: {code_stats.get('total_files', 0)}\n"
-        summary_report += f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
-        summary_report += f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
-        summary_report += f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
-        summary_report += f"- **Report**: [{os.path.basename(output_file)}]({os.path.basename(output_file)})\n\n"
+            # Print completion message with clear indication that the file is ready
+            print(f"\n✅ Evaluation for {author} completed and saved to {output_file}")
+            print(f"   - Files: {code_stats.get('total_files', 0)}")
+            print(f"   - Lines: +{code_stats.get('total_added_lines', 0)}/-{code_stats.get('total_deleted_lines', 0)}")
+            print(f"   - Time: {elapsed_time:.2f} seconds")
+            print(f"   - Cost: ${total_cost:.4f}")
 
-    # Save summary report
+            # Add to summary report
+            summary_report += f"### {author}\n\n"
+            summary_report += f"- **Commits**: {len(commits)}\n"
+            summary_report += f"- **Files Modified**: {code_stats.get('total_files', 0)}\n"
+            summary_report += f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
+            summary_report += f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
+            summary_report += f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
+            summary_report += f"- **Report**: [{os.path.basename(output_file)}]({os.path.basename(output_file)})\n\n"
+
+            # Update the summary file after each committer is evaluated
+            summary_file = os.path.join(output_dir, "summary.md")
+            with open(summary_file, "w", encoding="utf-8") as f:
+                f.write(summary_report)
+            logger.info(f"Updated summary report with {author}'s evaluation")
+
+        except Exception as e:
+            # Log the error but continue with other authors
+            error_msg = f"Error evaluating {author}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            print(f"\n❌ Error evaluating {author}: {str(e)}")
+
+            # Create an error report for this author
+            error_report = f"# Evaluation Error for {author}\n\n"
+            error_report += f"## Error Details\n\n"
+            error_report += f"```\n{str(e)}\n```\n\n"
+            error_report += f"## Commit Statistics\n\n"
+            error_report += f"- **Commits**: {len(commits)}\n"
+            error_report += f"- **Files Modified**: {code_stats.get('total_files', 0)}\n"
+            error_report += f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
+            error_report += f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
+
+            # Save the error report
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(error_report)
+
+            # Add to author reports dictionary
+            author_reports[author] = output_file
+
+            # Add error entry to summary report
+            summary_report += f"### {author} ❌\n\n"
+            summary_report += f"- **Status**: Error during evaluation\n"
+            summary_report += f"- **Commits**: {len(commits)}\n"
+            summary_report += f"- **Files Modified**: {code_stats.get('total_files', 0)}\n"
+            summary_report += f"- **Report**: [{os.path.basename(output_file)}]({os.path.basename(output_file)})\n\n"
+
+            # Update the summary file after each committer is evaluated (even if there's an error)
+            summary_file = os.path.join(output_dir, "summary.md")
+            with open(summary_file, "w", encoding="utf-8") as f:
+                f.write(summary_report)
+            logger.info(f"Updated summary report with error for {author}")
+
+    # Final summary report is already saved incrementally, just print a message
     summary_file = os.path.join(output_dir, "summary.md")
-    with open(summary_file, "w", encoding="utf-8") as f:
-        f.write(summary_report)
-    print(f"\nSummary report saved to {summary_file}")
+    print(f"\nFinal summary report saved to {summary_file}")
 
     # Send email report if addresses provided
     if email_addresses:
