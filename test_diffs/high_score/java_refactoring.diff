@@ -1,0 +1,237 @@
+diff --git a/src/main/java/com/example/service/OrderService.java b/src/main/java/com/example/service/OrderService.java
+index 1122334..5566778 100644
+--- a/src/main/java/com/example/service/OrderService.java
++++ b/src/main/java/com/example/service/OrderService.java
+@@ -1,62 +1,118 @@
+ package com.example.service;
+ 
+-import java.util.List;
+-import java.util.Optional;
+-
++import com.example.exception.OrderNotFoundException;
++import com.example.exception.PaymentFailedException;
++import com.example.model.Customer;
+ import com.example.model.Order;
++import com.example.model.OrderItem;
++import com.example.model.OrderStatus;
++import com.example.model.Payment;
++import com.example.model.Product;
+ import com.example.repository.OrderRepository;
++import com.example.repository.ProductRepository;
++import com.example.service.notification.NotificationService;
++import com.example.service.payment.PaymentService;
++import lombok.RequiredArgsConstructor;
++import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++import java.math.BigDecimal;
++import java.time.LocalDateTime;
++import java.util.List;
++import java.util.Optional;
++import java.util.stream.Collectors;
+ 
+ /**
+- * Service for handling orders
++ * Service for handling order operations including creation, processing, and management.
++ * This service coordinates between repositories and other services to fulfill order operations.
+  */
+ @Service
++@RequiredArgsConstructor
++@Slf4j
+ public class OrderService {
+ 
+-    @Autowired
+-    private OrderRepository orderRepository;
++    private final OrderRepository orderRepository;
++    private final ProductRepository productRepository;
++    private final PaymentService paymentService;
++    private final NotificationService notificationService;
+     
+     /**
+-     * Get all orders
+-     * @return List of orders
++     * Retrieves all orders in the system.
++     * 
++     * @return List of all orders
+      */
+     public List<Order> getAllOrders() {
++        log.debug("Retrieving all orders");
+         return orderRepository.findAll();
+     }
+     
+     /**
+-     * Get order by ID
+-     * @param id Order ID
+-     * @return Optional containing order if found
++     * Retrieves an order by its unique identifier.
++     * 
++     * @param id The order ID to look up
++     * @return The order if found
++     * @throws OrderNotFoundException if the order does not exist
+      */
+-    public Optional<Order> getOrderById(Long id) {
+-        return orderRepository.findById(id);
++    public Order getOrderById(Long id) {
++        log.debug("Retrieving order with ID: {}", id);
++        return orderRepository.findById(id)
++                .orElseThrow(() -> new OrderNotFoundException("Order not found with ID: " + id));
+     }
+     
+     /**
+-     * Create a new order
+-     * @param order Order to create
+-     * @return Created order
++     * Creates a new order for a customer with the specified items.
++     * Validates product availability and calculates the total price.
++     * 
++     * @param customer The customer placing the order
++     * @param items List of order items
++     * @return The created order
+      */
+-    public Order createOrder(Order order) {
+-        return orderRepository.save(order);
++    @Transactional
++    public Order createOrder(Customer customer, List<OrderItem> items) {
++        log.info("Creating new order for customer: {}", customer.getId());
++        
++        // Validate all products exist and are in stock
++        validateOrderItems(items);
++        
++        // Calculate order total
++        BigDecimal total = calculateOrderTotal(items);
++        
++        // Create new order
++        Order order = Order.builder()
++                .customer(customer)
++                .items(items)
++                .status(OrderStatus.PENDING)
++                .total(total)
++                .createdAt(LocalDateTime.now())
++                .build();
++        
++        // Set order reference in items
++        items.forEach(item -> item.setOrder(order));
++        
++        // Save order
++        Order savedOrder = orderRepository.save(order);
++        
++        // Update product inventory
++        updateProductInventory(items);
++        
++        // Send notification
++        notificationService.sendOrderCreationNotification(customer, savedOrder);
++        
++        log.info("Order created successfully with ID: {}", savedOrder.getId());
++        return savedOrder;
+     }
+     
+     /**
+-     * Update an existing order
+-     * @param id Order ID
+-     * @param orderDetails Updated order details
+-     * @return Updated order
+-     * @throws RuntimeException if order not found
++     * Processes payment for an order and updates its status.
++     * 
++     * @param orderId The ID of the order to process
++     * @param payment The payment details
++     * @return The updated order with payment information
++     * @throws OrderNotFoundException if the order does not exist
++     * @throws PaymentFailedException if the payment processing fails
+      */
+-    public Order updateOrder(Long id, Order orderDetails) {
+-        Order order = orderRepository.findById(id)
+-                .orElseThrow(() -> new RuntimeException("Order not found with id " + id));
+-        
+-        order.setCustomerId(orderDetails.getCustomerId());
+-        order.setItems(orderDetails.getItems());
+-        order.setTotal(orderDetails.getTotal());
+-        order.setStatus(orderDetails.getStatus());
+-        
+-        return orderRepository.save(order);
++    @Transactional
++    public Order processPayment(Long orderId, Payment payment) {
++        log.info("Processing payment for order: {}", orderId);
++        
++        // Get order
++        Order order = getOrderById(orderId);
++        
++        // Validate order status
++        if (order.getStatus() != OrderStatus.PENDING) {
++            log.warn("Cannot process payment for order with status: {}", order.getStatus());
++            throw new IllegalStateException("Cannot process payment for order with status: " + order.getStatus());
++        }
++        
++        // Process payment
++        try {
++            Payment processedPayment = paymentService.processPayment(payment, order.getTotal());
++            
++            // Update order with payment information
++            order.setPayment(processedPayment);
++            order.setStatus(OrderStatus.PAID);
++            order.setUpdatedAt(LocalDateTime.now());
++            
++            Order updatedOrder = orderRepository.save(order);
++            
++            // Send notification
++            notificationService.sendPaymentConfirmationNotification(order.getCustomer(), updatedOrder);
++            
++            log.info("Payment processed successfully for order: {}", orderId);
++            return updatedOrder;
++        } catch (Exception e) {
++            log.error("Payment processing failed for order: {}", orderId, e);
++            throw new PaymentFailedException("Payment processing failed: " + e.getMessage());
++        }
+     }
+     
+     /**
+-     * Delete an order
+-     * @param id Order ID
++     * Validates that all order items reference valid products and that
++     * sufficient inventory is available.
++     *
++     * @param items The order items to validate
++     * @throws IllegalArgumentException if any validation fails
+      */
+-    public void deleteOrder(Long id) {
+-        orderRepository.deleteById(id);
++    private void validateOrderItems(List<OrderItem> items) {
++        for (OrderItem item : items) {
++            Product product = productRepository.findById(item.getProduct().getId())
++                    .orElseThrow(() -> new IllegalArgumentException(
++                            "Product not found with ID: " + item.getProduct().getId()));
++            
++            if (product.getStock() < item.getQuantity()) {
++                throw new IllegalArgumentException(
++                        "Insufficient stock for product: " + product.getName());
++            }
++        }
++    }
++    
++    /**
++     * Calculates the total price for all items in the order.
++     *
++     * @param items The order items
++     * @return The calculated total price
++     */
++    private BigDecimal calculateOrderTotal(List<OrderItem> items) {
++        return items.stream()
++                .map(item -> item.getProduct().getPrice().multiply(BigDecimal.valueOf(item.getQuantity())))
++                .reduce(BigDecimal.ZERO, BigDecimal::add);
++    }
++    
++    /**
++     * Updates product inventory levels based on order items.
++     *
++     * @param items The order items
++     */
++    private void updateProductInventory(List<OrderItem> items) {
++        items.forEach(item -> {
++            Product product = item.getProduct();
++            product.setStock(product.getStock() - item.getQuantity());
++            productRepository.save(product);
++        });
+     }
+ }

@@ -1,0 +1,116 @@
+diff --git a/app/api/user_controller.py b/app/api/user_controller.py
+index 1234567..abcdefg 100644
+--- a/app/api/user_controller.py
++++ b/app/api/user_controller.py
+@@ -1,25 +1,58 @@
+ import os
+ import sqlite3
++import subprocess
+ from flask import Flask, request, jsonify
+ 
+ app = Flask(__name__)
+ 
+-# Database connection
+-def get_db_connection():
+-    conn = sqlite3.connect('database.db')
+-    conn.row_factory = sqlite3.Row
+-    return conn
++# Hardcoded credentials
++DB_USER = "admin"
++DB_PASS = "admin123"
++SECRET_KEY = "my_super_secret_key_do_not_share"
++
++# Insecure database connection
++def get_db_connection(db_name='database.db'):
++    try:
++        conn = sqlite3.connect(db_name)
++        conn.row_factory = sqlite3.Row
++        return conn
++    except Exception as e:
++        print(f"Database connection error: {e}")
++        return None
+ 
+ @app.route('/api/users', methods=['GET'])
+ def get_users():
+-    conn = get_db_connection()
+-    users = conn.execute('SELECT * FROM users').fetchall()
+-    conn.close()
++    # SQL Injection vulnerability
++    search = request.args.get('search', '')
++    
++    conn = get_db_connection()
++    if not conn:
++        return jsonify({"error": "Database connection failed"}), 500
++        
++    # Vulnerable to SQL injection
++    query = f"SELECT * FROM users WHERE name LIKE '%{search}%'"
++    users = conn.execute(query).fetchall()
++    conn.close()
+     
+     return jsonify([dict(user) for user in users])
+ 
+ @app.route('/api/users/<int:user_id>', methods=['GET'])
+ def get_user(user_id):
++    conn = get_db_connection()
++    user = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
++    conn.close()
++    
++    if user is None:
++        return jsonify({"error": "User not found"}), 404
++        
++    return jsonify(dict(user))
++
++@app.route('/api/execute', methods=['POST'])
++def execute_command():
++    # Command injection vulnerability
++    command = request.json.get('command', '')
++    
++    # Extremely dangerous - allows arbitrary command execution
++    result = subprocess.check_output(command, shell=True)
++    
++    return jsonify({"result": result.decode('utf-8')})
++
++@app.route('/api/users', methods=['POST'])
++def create_user():
++    # No input validation
++    user_data = request.json
++    
++    # No password hashing
++    name = user_data.get('name')
++    email = user_data.get('email')
++    password = user_data.get('password')  # Storing plain text password
++    
+     conn = get_db_connection()
+-    user = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
++    conn.execute(
++        'INSERT INTO users (name, email, password) VALUES (?, ?, ?)',
++        (name, email, password)
++    )
++    conn.commit()
+     conn.close()
+     
+-    if user is None:
+-        return jsonify({"error": "User not found"}), 404
+-        
+-    return jsonify(dict(user))
++    return jsonify({"success": True, "message": "User created"})
++
++@app.route('/api/backup', methods=['GET'])
++def backup_database():
++    # Path traversal vulnerability
++    filename = request.args.get('filename', 'backup.db')
++    
++    # Vulnerable to path traversal
++    backup_path = os.path.join('/tmp', filename)
++    
++    # Copy database to specified path
++    conn = get_db_connection()
++    conn.close()
++    
++    os.system(f"cp database.db {backup_path}")
++    
++    return jsonify({"success": True, "backup_path": backup_path})
++
++if __name__ == '__main__':
++    # Running in debug mode in production
++    app.run(debug=True, host='0.0.0.0')
