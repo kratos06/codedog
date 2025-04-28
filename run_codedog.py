@@ -21,7 +21,7 @@ from gitlab import Gitlab
 from langchain_community.callbacks.manager import get_openai_callback
 
 from codedog.actors.reporters.pull_request import PullRequestReporter
-from codedog.chains import CodeReviewChain, PRSummaryChain
+from codedog.chains import CodeReviewChain, PRSummaryChain, CodeReviewChainFactory
 from codedog.retrievers import GithubRetriever, GitlabRetriever
 from codedog.utils.langchain_utils import load_model_by_name
 from codedog.utils.email_utils import send_report_email
@@ -464,7 +464,7 @@ def get_all_remote_commits(
             end_iso = f"{end_date}T23:59:59Z"
 
             # Get all commits in the repository within the date range
-            all_commits = project.commits.list(all=True, since=start_iso, until=end_iso)
+            all_commits = project.commits.list(all=True, get_all=True, since=start_iso, until=end_iso)
             logger.info(f"Found {len(all_commits)} commits in the date range")
 
             # Group commits by author
@@ -493,7 +493,7 @@ def get_all_remote_commits(
                 commit_detail = project.commits.get(commit.id)
 
                 # Get commit diff
-                diff = commit_detail.diff()
+                diff = commit_detail.diff(get_all=True)
 
                 # Filter files by extension
                 filtered_diff = []
@@ -703,7 +703,7 @@ def get_remote_commits(
             end_iso = f"{end_date}T23:59:59Z"
 
             # Get all commits in the repository within the date range
-            all_commits = project.commits.list(all=True, since=start_iso, until=end_iso)
+            all_commits = project.commits.list(all=True, get_all=True, since=start_iso, until=end_iso)
 
             # Filter by author
             for commit in all_commits:
@@ -714,7 +714,7 @@ def get_remote_commits(
                     commit_detail = project.commits.get(commit.id)
 
                     # Get commit diff
-                    diff = commit_detail.diff()
+                    diff = commit_detail.diff(get_all=True)
 
                     # Filter files by extension
                     filtered_diff = []
@@ -1336,10 +1336,29 @@ def generate_full_report(repository_name, pull_request_number, email_addresses=N
         verbose=True
     )
 
-    review_chain = CodeReviewChain.from_llm(
+    # Check if orchestration is enabled
+    use_orchestration = os.environ.get("USE_ORCHESTRATION", "false").lower() == "true"
+
+    # Create code review chain using factory
+    review_chain = CodeReviewChainFactory.create_chain(
         llm=load_model_by_name(code_review_model),
+        use_orchestration=use_orchestration,
+        models={
+            "default": load_model_by_name(code_review_model),
+            "coordinator": load_model_by_name(code_review_model),
+            "security": load_model_by_name(code_review_model),
+            "performance": load_model_by_name(code_review_model),
+            "readability": load_model_by_name(code_review_model),
+            "architecture": load_model_by_name(code_review_model),
+            "documentation": load_model_by_name(code_review_model)
+        } if use_orchestration else None,
         verbose=True
     )
+
+    if use_orchestration:
+        print("Using orchestrated code review with specialized agents")
+    else:
+        print("Using standard code review")
 
     with get_openai_callback() as cb:
         # Get PR summary

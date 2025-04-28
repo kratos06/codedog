@@ -1,0 +1,51 @@
+diff --git a/example.py b/example.py
+index 1234567..abcdefg 100644
+--- a/example.py
++++ b/example.py
+@@ -1,10 +1,15 @@
+ import os
+ import sys
++import json
++from typing import Dict, Any, Optional
+ 
+-def hello_world():
+-    print("Hello, World!")
++def hello_world(name: Optional[str] = None) -> str:
++    """
++    Returns a greeting message.
++    
++    Args:
++        name: Optional name to greet. If None, uses "World".
++    """
++    greeting = f"Hello, {name or 'World'}!"
++    return greeting
+ 
+-if __name__ == "__main__":
+-    hello_world()
+-    print("Goodbye!")
++def save_greeting(name: Optional[str] = None, file_path: str = "greeting.json") -> Dict[str, Any]:
++    """
++    Saves a greeting to a JSON file.
++    
++    Args:
++        name: Optional name to greet
++        file_path: Path to save the greeting
++        
++    Returns:
++        Dictionary containing the greeting data
++    """
++    greeting = hello_world(name)
++    data = {
++        "greeting": greeting,
++        "timestamp": os.path.getmtime(file_path) if os.path.exists(file_path) else None
++    }
++    
++    with open(file_path, "w") as f:
++        json.dump(data, f)
++    
++    return data
++
++if __name__ == "__main__":
++    name = sys.argv[1] if len(sys.argv) > 1 else None
++    result = save_greeting(name)
++    print(result["greeting"])
