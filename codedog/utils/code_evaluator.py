@@ -385,44 +385,126 @@ class DiffEvaluator:
             os.makedirs("diffs", exist_ok=True)
 
         # System prompt - 使用优化的系统提示
-        self.system_prompt = """你是一位经验丰富的代码评审专家，擅长评价各种编程语言的代码质量。
-请根据以下几个方面对代码进行评价，并给出1-10分的评分（10分为最高）：
-1. 可读性：代码是否易于阅读和理解
-2. 效率：代码是否高效，是否有性能问题
-3. 安全性：代码是否存在安全隐患
-4. 结构：代码结构是否合理，是否遵循良好的设计原则
-5. 错误处理：是否有适当的错误处理机制
-6. 文档和注释：注释是否充分，是否有必要的文档
-7. 代码风格：是否遵循一致的代码风格和最佳实践
-8. 总体评分：综合以上各项的总体评价
+        self.system_prompt = """# ROLE AND OBJECTIVE
+You are a senior code reviewer with 15+ years of experience across multiple programming languages and frameworks. Your task is to provide a thorough, objective evaluation of code quality and estimate the effort required to implement the changes.
 
-请以JSON格式返回结果，包含以上各项评分和详细评价意见。
+# EVALUATION DIMENSIONS
+Evaluate the code on these dimensions, scoring each from 1-10 (10 being highest):
 
-重要提示：
-1. 即使代码不完整或难以理解，也请尽量给出评价，并在评论中说明情况
-2. 如果代码是差异格式（diff），请忽略差异标记（+/-），专注于评价代码本身
-3. 如果无法评估，请返回默认评分5分，并在评论中说明原因
-4. 始终返回有效的JSON格式"""
+1. Readability (1-10): Code clarity, naming conventions, consistent formatting
+2. Efficiency (1-10): Algorithmic efficiency, resource usage, performance considerations
+3. Security (1-10): Protection against vulnerabilities, input validation, secure coding practices
+4. Structure (1-10): Architecture, modularity, separation of concerns, SOLID principles
+5. Error Handling (1-10): Robust error handling, edge cases, graceful failure
+6. Documentation (1-10): Comments, docstrings, self-documenting code
+7. Code Style (1-10): Adherence to language/framework conventions and best practices
+8. Overall Score (1-10): Comprehensive evaluation considering all dimensions
+
+# CODE CHANGE CLASSIFICATION
+When evaluating code changes (especially in diff format), carefully distinguish between:
+
+## Non-Effective Changes (Should NOT count significantly toward working hours)
+- Whitespace adjustments (spaces, tabs, line breaks)
+- Indentation fixes without logic changes
+- Comment additions or modifications without code changes
+- Import reordering or reorganization
+- Variable/function renaming without behavior changes
+- Code reformatting (line wrapping, bracket placement)
+- Changing string quotes (single to double quotes)
+- Adding/removing trailing commas
+- Changing code style to match linter rules
+- Removing unused imports or variables
+
+## Effective Changes (SHOULD count toward working hours)
+- Logic modifications that alter program behavior
+- Functionality additions or removals
+- Algorithm changes or optimizations
+- Bug fixes that correct actual issues
+- API changes (parameters, return types, etc.)
+- Data structure modifications
+- Performance optimizations
+- Security vulnerability fixes
+- Error handling improvements
+- Complex refactoring that maintains behavior but improves code quality
+
+# WORKING HOURS ESTIMATION GUIDELINES
+When estimating the time an experienced programmer (5-10+ years) would need:
+
+1. For purely non-effective changes:
+   - 0.1-0.2 hours for small files
+   - 0.3-0.5 hours for large files with extensive formatting
+
+2. For effective changes, consider:
+   - Complexity of the logic (simple, moderate, complex)
+   - Domain knowledge required (general, specialized, expert)
+   - Testing requirements (minimal, moderate, extensive)
+   - Integration complexity (isolated, moderate dependencies, highly coupled)
+
+3. Time components to include in your estimate:
+   - Understanding the existing code
+   - Designing the solution
+   - Implementing the changes
+   - Testing and debugging
+   - Documentation and code review
+
+4. Provide a realistic estimate that reflects the actual work required, not just the line count.
+
+# LANGUAGE-SPECIFIC CONSIDERATIONS
+- For Python: Consider PEP 8 compliance, type hints, docstrings
+- For JavaScript/TypeScript: Consider ES6+ features, typing, framework conventions
+- For Java: Consider OOP principles, exception handling, Java conventions
+- For C/C++: Consider memory management, performance, platform considerations
+- For other languages: Apply relevant best practices and conventions
+
+3. When reviewing diff format code:
+   - Pay attention to both added (+) and removed (-) lines to understand the complete change
+   - Evaluate the net effect of the changes, not just individual lines
+   - Consider the context of the entire file when evaluating specific changes
+
+4. If you cannot evaluate the code:
+   - Assign a default score of 5 for each dimension
+   - Explain why evaluation wasn't possible
+   - Estimate minimal working hours (0.25) for changes that cannot be properly evaluated
+
+Always return valid JSON format with all required fields."""
 
         # 添加JSON输出指令
         self.json_output_instruction = """
-请以JSON格式返回评价结果，包含7个评分字段和详细评价意见：
+# OUTPUT FORMAT
+Return your evaluation in valid JSON format with the following structure:
 
 ```json
 {
-  "readability": 评分,
-  "efficiency": 评分,
-  "security": 评分,
-  "structure": 评分,
-  "error_handling": 评分,
-  "documentation": 评分,
-  "code_style": 评分,
-  "overall_score": 总评分,
-  "comments": "详细评价意见和改进建议"
+  "readability": score,
+  "efficiency": score,
+  "security": score,
+  "structure": score,
+  "error_handling": score,
+  "documentation": score,
+  "code_style": score,
+  "overall_score": score,
+  "effective_code_lines": number,
+  "non_effective_code_lines": number,
+  "estimated_hours": number,
+  "comments": "detailed analysis with specific observations and recommendations"
 }
 ```
 
-总评分计算方式：所有7个指标的加权平均值（取一位小数）。
+## JSON Output Guidelines:
+1. All scores MUST be integers or decimals between 1-10
+2. The overall_score should reflect the weighted importance of all dimensions
+3. effective_code_lines should count ONLY changes that affect behavior or functionality
+4. non_effective_code_lines should count formatting, style, and cosmetic changes
+5. estimated_hours should be a realistic estimate for an experienced programmer (5-10+ years)
+6. comments should include:
+   - Specific observations about code quality
+   - Concrete recommendations for improvement
+   - Explanation of effective vs. non-effective changes
+   - Justification for your working hours estimate
+   - Any security concerns or performance issues
+   - Suggestions for better practices or patterns
+
+IMPORTANT: Ensure your response is valid JSON that can be parsed programmatically. Do not include explanatory text outside the JSON structure.
 """
 
     @retry(
@@ -657,20 +739,84 @@ class DiffEvaluator:
                     # 清理代码内容，移除异常字符
                     sanitized_diff = self._sanitize_content(diff_content)
 
-                    # 使用优化的代码评审prompt
-                    review_prompt = CODE_REVIEW_PROMPT.format(
-                        file_name=file_name,
-                        language=language.lower(),
-                        code_content=sanitized_diff
-                    )
+                    # 使用自定义代码评审prompt
+                    review_prompt = f"""# Code Review Request
+
+## File Information
+- **File Name**: {file_name}
+- **Language**: {language.lower()}
+
+## Code to Review
+```{language.lower()}
+{sanitized_diff}
+```
+
+## Instructions
+
+Please conduct a comprehensive code review following these steps:
+
+1. **Initial Analysis**: Begin with a brief overview of the code's purpose and functionality.
+
+2. **Detailed Evaluation**: Analyze the code across these key dimensions:
+
+   a. **Readability** (1-10):
+      - Variable and function naming clarity
+      - Code organization and structure
+      - Consistent formatting and indentation
+      - Appropriate use of comments
+
+   b. **Efficiency** (1-10):
+      - Algorithm efficiency and complexity
+      - Resource utilization (memory, CPU)
+      - Optimization opportunities
+      - Potential bottlenecks
+
+   c. **Security** (1-10):
+      - Input validation and sanitization
+      - Authentication and authorization concerns
+      - Data protection and privacy
+      - Potential vulnerabilities
+
+   d. **Structure** (1-10):
+      - Modularity and separation of concerns
+      - Appropriate design patterns
+      - Code reusability
+      - Dependency management
+
+   e. **Error Handling** (1-10):
+      - Exception handling completeness
+      - Edge case coverage
+      - Graceful failure mechanisms
+      - Informative error messages
+
+   f. **Documentation** (1-10):
+      - Documentation completeness
+      - Comment quality and relevance
+      - API documentation
+      - Usage examples where appropriate
+
+   g. **Code Style** (1-10):
+      - Adherence to language conventions
+      - Consistency with project style
+      - Readability enhancements
+      - Modern language feature usage
+
+3. **Code Change Classification**:
+   - Carefully distinguish between effective and non-effective code changes
+   - Non-effective changes include: whitespace adjustments, indentation fixes, comment additions, import reordering, variable/function renaming without behavior changes, code reformatting, changing string quotes, etc.
+   - Effective changes include: logic modifications, functionality additions/removals, algorithm changes, bug fixes, API changes, data structure modifications, performance optimizations, security fixes, etc.
+
+4. **Working Hours Estimation**:
+   - Estimate how many effective working hours an experienced programmer (5-10+ years) would need to complete these code changes
+   - Focus primarily on effective code changes, not formatting or style changes
+   - Consider code complexity, domain knowledge requirements, and context
+   - Include time for understanding, implementation, testing, and integration
+"""
 
                     # 添加语言特定的考虑因素
                     language_key = language.lower()
                     if language_key in LANGUAGE_SPECIFIC_CONSIDERATIONS:
                         review_prompt += "\n\n" + LANGUAGE_SPECIFIC_CONSIDERATIONS[language_key]
-
-                    # 添加工作时间估计请求
-                    review_prompt += "\n\nIn addition to the code evaluation, please also estimate how many effective working hours an experienced programmer (5-10+ years) would need to complete these code changes. Include this estimate in your JSON response as 'estimated_hours'."
 
                     # 添加JSON输出指令
                     review_prompt += "\n\n" + self.json_output_instruction
@@ -680,16 +826,16 @@ class DiffEvaluator:
                         HumanMessage(content=review_prompt)
                     ]
 
-                    # 调用模型
+                    # Call the model
                     response = await self.model.agenerate(messages=[messages])
                     self._last_request_time = time.time()
 
-                    # 获取响应文本
+                    # Get response text
                     generated_text = response.generations[0][0].text
 
-                # 解析响应
+                # Parse response
                 try:
-                    # 提取JSON
+                    # Extract JSON
                     json_str = self._extract_json(generated_text)
                     if not json_str:
                         logger.warning("Failed to extract JSON from response, attempting to fix")
@@ -697,17 +843,17 @@ class DiffEvaluator:
 
                     if not json_str:
                         logger.error("Could not extract valid JSON from the response")
-                        return self._generate_default_scores("JSON解析错误。原始响应: " + str(generated_text)[:500])
+                        return self._generate_default_scores("JSON parsing error. Original response: " + str(generated_text)[:500])
 
                     result = json.loads(json_str)
 
-                    # 验证分数
+                    # Validate scores
                     scores = self._validate_scores(result)
 
-                    # 请求成功，调整速率限制
+                    # Request successful, adjust rate limits
                     self._adjust_rate_limits(is_rate_limited=False)
 
-                    # 缓存结果
+                    # Cache results
                     self.cache[file_hash] = scores
 
                     return scores
@@ -1282,40 +1428,40 @@ class DiffEvaluator:
         print(f"DEBUG: Response type: {type(text)}, length: {len(text)}")
         print(f"DEBUG: First 100 chars: '{text[:100]}'")
 
-        # 记录完整响应用于调试
+        # Log complete response for debugging
         logger.debug(f"Complete model response: {text}")
 
-        # 检查是否包含无法评估的提示（如Base64编码内容）
+        # Check for patterns indicating unevaluable content (like Base64 encoded content)
         unevaluable_patterns = [
-            r'Base64编码',
-            r'无法解码的字符串',
+            r'Base64',
+            r'undecodable string',
             r'ICAgIA==',
-            r'无法评估',
-            r'无法对这段代码进行评审',
-            r'无法进行评价',
-            r'无法对代码进行评估',
-            r'代码内容太短',
-            r'代码为空',
-            r'没有提供实际的代码',
-            r'无法理解',
-            r'无法解析',
-            r'无法分析',
-            r'无法读取',
-            r'无法识别',
-            r'无法处理',
-            r'无效的代码',
-            r'不是有效的代码',
-            r'不是代码',
-            r'不包含代码',
-            r'只包含了一个无法解码的字符串'
+            r'cannot evaluate',
+            r'cannot review this code',
+            r'unable to evaluate',
+            r'unable to assess the code',
+            r'code is too short',
+            r'code is empty',
+            r'no actual code provided',
+            r'cannot understand',
+            r'cannot parse',
+            r'cannot analyze',
+            r'cannot read',
+            r'cannot recognize',
+            r'cannot process',
+            r'invalid code',
+            r'not valid code',
+            r'not code',
+            r'does not contain code',
+            r'only contains an undecodable string'
         ]
 
         for pattern in unevaluable_patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 print(f"DEBUG: Detected response indicating unevaluable content: '{pattern}'")
-                # 提取评论，如果有的话
+                # Extract comments if any
                 comment = text[:200] if len(text) > 200 else text
-                # 创建一个默认的JSON响应
+                # Create a default JSON response
                 default_json = {
                     "readability": 5,
                     "efficiency": 5,
@@ -1686,43 +1832,100 @@ class DiffEvaluator:
                     # 清理代码内容，移除异常字符
                     sanitized_chunk = self._sanitize_content(chunk)
 
-                    review_prompt = f"""请评价以下代码：
+                    review_prompt = f"""# Code Review Request
 
-文件名：{file_name}
-语言：{language}
+## File Information
+- **File Name**: {file_name}
+- **Language**: {language.lower()}
 
-```
+## Code to Review
+```{language.lower()}
 {sanitized_chunk}
 ```
 
-请对这段代码进行全面评价，并给出1-10分的评分（10分为最高）。评价应包括以下几个方面：
-1. 可读性 (readability)：代码是否易于阅读和理解
-2. 效率 (efficiency)：代码是否高效，是否有性能问题
-3. 安全性 (security)：代码是否存在安全隐患
-4. 结构 (structure)：代码结构是否合理，是否遵循良好的设计原则
-5. 错误处理 (error_handling)：是否有适当的错误处理机制
-6. 文档和注释 (documentation)：注释是否充分，是否有必要的文档
-7. 代码风格 (code_style)：是否遵循一致的代码风格和最佳实践
-8. 总体评分 (overall_score)：综合以上各项的总体评价
+## Instructions
 
-请以JSON格式返回结果，格式如下：
+Please conduct a comprehensive code review following these steps:
+
+1. **Initial Analysis**: Begin with a brief overview of the code's purpose and functionality.
+
+2. **Detailed Evaluation**: Analyze the code across these key dimensions:
+
+   a. **Readability** (1-10):
+      - Variable and function naming clarity
+      - Code organization and structure
+      - Consistent formatting and indentation
+      - Appropriate use of comments
+
+   b. **Efficiency** (1-10):
+      - Algorithm efficiency and complexity
+      - Resource utilization (memory, CPU)
+      - Optimization opportunities
+      - Potential bottlenecks
+
+   c. **Security** (1-10):
+      - Input validation and sanitization
+      - Authentication and authorization concerns
+      - Data protection and privacy
+      - Potential vulnerabilities
+
+   d. **Structure** (1-10):
+      - Modularity and separation of concerns
+      - Appropriate design patterns
+      - Code reusability
+      - Dependency management
+
+   e. **Error Handling** (1-10):
+      - Exception handling completeness
+      - Edge case coverage
+      - Graceful failure mechanisms
+      - Informative error messages
+
+   f. **Documentation** (1-10):
+      - Documentation completeness
+      - Comment quality and relevance
+      - API documentation
+      - Usage examples where appropriate
+
+   g. **Code Style** (1-10):
+      - Adherence to language conventions
+      - Consistency with project style
+      - Readability enhancements
+      - Modern language feature usage
+
+3. **Code Change Classification**:
+   - Carefully distinguish between effective and non-effective code changes
+   - Non-effective changes include: whitespace adjustments, indentation fixes, comment additions, import reordering, variable/function renaming without behavior changes, code reformatting, changing string quotes, etc.
+   - Effective changes include: logic modifications, functionality additions/removals, algorithm changes, bug fixes, API changes, data structure modifications, performance optimizations, security fixes, etc.
+
+4. **Working Hours Estimation**:
+   - Estimate how many effective working hours an experienced programmer (5-10+ years) would need to complete these code changes
+   - Focus primarily on effective code changes, not formatting or style changes
+   - Consider code complexity, domain knowledge requirements, and context
+   - Include time for understanding, implementation, testing, and integration
+
+## Response Format
+
+Please return your evaluation in valid JSON format with the following structure:
+
 ```json
 {{
-  "readability": 评分,
-  "efficiency": 评分,
-  "security": 评分,
-  "structure": 评分,
-  "error_handling": 评分,
-  "documentation": 评分,
-  "code_style": 评分,
-  "overall_score": 总评分,
-  "comments": "详细评价意见和改进建议"
+  "readability": score,
+  "efficiency": score,
+  "security": score,
+  "structure": score,
+  "error_handling": score,
+  "documentation": score,
+  "code_style": score,
+  "overall_score": score,
+  "effective_code_lines": number,
+  "non_effective_code_lines": number,
+  "estimated_hours": number,
+  "comments": "detailed analysis with specific observations and recommendations"
 }}
 ```
 
-总评分应该是所有评分的加权平均值，保留一位小数。如果代码很小或者只是配置文件的修改，请根据实际情况给出合理的评分。
-
-重要提示：请确保返回有效的JSON格式。如果无法评估代码（例如代码不完整或无法理解），请仍然返回JSON格式，但在comments中说明原因，并给出默认评分5分。"""
+IMPORTANT: Ensure your response is valid JSON that can be parsed programmatically. If you cannot evaluate the code (e.g., incomplete or incomprehensible code), still return valid JSON with default scores of 5 and explain the reason in the comments field."""
 
                     # 打印完整的代码块用于调试
                     print(f"DEBUG: File name: {file_name}")
@@ -1782,11 +1985,11 @@ class DiffEvaluator:
                     user_message = messages[0].content if len(messages) > 0 else "No user message"
                     log_llm_interaction(user_message, "", interaction_type="diff_chunk_evaluation_prompt")
 
-                    # 调用模型
+                    # Call the model
                     response = await self.model.agenerate(messages=[messages])
                     self._last_request_time = time.time()
 
-                    # 获取响应文本
+                    # Get response text
                     generated_text = response.generations[0][0].text
 
                     # Log the response to LLM_out.log
@@ -1832,20 +2035,20 @@ class DiffEvaluator:
                 # 检查是否是上下文长度限制错误
                 is_context_length_error = "context length" in error_message.lower() or "maximum context length" in error_message.lower()
 
-                # 检查是否是DeepSeek API错误
+                # Check if it's a DeepSeek API error
                 is_deepseek_error = "deepseek" in error_message.lower() or "deepseek api" in error_message.lower()
 
                 if is_context_length_error:
-                    # 如果是上下文长度错误，尝试进一步分割
+                    # If it's a context length error, try further splitting
                     logger.warning(f"Context length limit error, attempting further content splitting")
-                    smaller_chunks = self._split_diff_content(chunk, max_tokens_per_chunk=4000)  # 使用更小的块大小
+                    smaller_chunks = self._split_diff_content(chunk, max_tokens_per_chunk=4000)  # Use smaller chunk size
 
                     if len(smaller_chunks) > 1:
-                        # 如果成功分割成多个小块，分别评估并合并结果
+                        # If successfully split into multiple smaller chunks, evaluate each and merge results
                         sub_results = []
                         for i, sub_chunk in enumerate(smaller_chunks):
                             logger.info(f"Evaluating sub-chunk {i+1}/{len(smaller_chunks)}")
-                            sub_result = await self._evaluate_diff_chunk(sub_chunk)  # 递归调用
+                            sub_result = await self._evaluate_diff_chunk(sub_chunk)  # Recursive call
                             sub_results.append(sub_result)
 
                         return self._merge_chunk_results(sub_results)
@@ -1862,42 +2065,42 @@ class DiffEvaluator:
                     logger.warning(f"Rate limit error, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
                     await asyncio.sleep(wait_time)
                 elif is_deepseek_error:
-                    # 对于DeepSeek API错误，最多重试两次，然后放弃
+                    # For DeepSeek API errors, retry at most twice, then abandon
                     retry_count += 1
-                    if retry_count >= 2:  # 只重试两次
+                    if retry_count >= 2:  # Only retry twice
                         logger.error(f"DeepSeek API error after 2 retries, abandoning evaluation: {error_message}")
                         logger.error(f"Original error: {e}")
                         logger.error(f"Last response (if any): {generated_text[:500] if generated_text else 'No response'}")
 
-                        # 创建一个详细的错误消息
-                        error_detail = f"DeepSeek API错误，放弃评估: {error_message}\n"
-                        error_detail += f"原始错误: {e}\n"
-                        error_detail += f"最后响应: {generated_text[:200] if generated_text else '无响应'}"
+                        # Create a detailed error message
+                        error_detail = f"DeepSeek API error, abandoning evaluation: {error_message}\n"
+                        error_detail += f"Original error: {e}\n"
+                        error_detail += f"Last response: {generated_text[:200] if generated_text else 'No response'}"
 
                         return self._generate_default_scores(error_detail)
-                    # 使用较短的等待时间
-                    wait_time = 3  # 固定3秒等待时间
+                    # Use a shorter wait time
+                    wait_time = 3  # Fixed 3-second wait time
                     logger.warning(f"DeepSeek API error, retrying in {wait_time}s (attempt {retry_count}/2)")
                     logger.warning(f"Error details: {error_message}")
                     await asyncio.sleep(wait_time)
                 else:
-                    # 其他错误直接返回
-                    return self._generate_default_scores(f"评价过程中出错: {error_message}")
+                    # Return directly for other errors
+                    return self._generate_default_scores(f"Error during evaluation: {error_message}")
 
-        # 如果所有重试都失败
-        return self._generate_default_scores("达到最大重试次数，评价失败")
+        # If all retries fail
+        return self._generate_default_scores("Maximum retry count reached, evaluation failed")
 
     def _merge_chunk_results(self, chunk_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """合并多个块的评估结果
+        """Merge evaluation results from multiple chunks
 
         Args:
-            chunk_results: 多个块的评估结果列表
+            chunk_results: List of evaluation results from multiple chunks
 
         Returns:
-            Dict[str, Any]: 合并后的评估结果
+            Dict[str, Any]: Merged evaluation result
         """
         if not chunk_results:
-            return self._generate_default_scores("没有可用的块评估结果")
+            return self._generate_default_scores("No chunk evaluation results available")
 
         if len(chunk_results) == 1:
             return chunk_results[0]
@@ -2843,14 +3046,57 @@ class DiffEvaluator:
         # Create a prompt for evaluating the entire commit
         language = "multiple"  # Since we're evaluating multiple files
 
-        # Create a prompt that specifically asks for working hours estimation
+        # Create a prompt that specifically asks for working hours estimation and distinguishes effective changes
         prompt = f"""Act as a senior code reviewer with 10+ years of experience. I will provide you with a complete diff of a commit that includes multiple files.
 
 Please analyze the entire commit as a whole and provide:
 
 1. A comprehensive evaluation of the code changes
-2. An estimate of how many effective working hours an experienced programmer (5-10+ years) would need to complete these code changes
-3. Scores for the following aspects (1-10 scale):
+2. Carefully distinguish between effective code changes and non-effective changes:
+   - Non-effective changes (should NOT count toward working hours):
+     * Whitespace adjustments (spaces, tabs, line breaks)
+     * Indentation fixes without logic changes
+     * Comment additions or modifications without code changes
+     * Import reordering or reorganization
+     * Variable/function renaming without behavior changes
+     * Code reformatting (e.g., line wrapping, bracket placement)
+     * Changing string quotes (e.g., single to double quotes)
+     * Adding/removing trailing commas
+     * Changing code style to match linter rules
+
+   - Effective changes (SHOULD count toward working hours):
+     * Logic modifications that alter program behavior
+     * Functionality additions or removals
+     * Algorithm changes or optimizations
+     * Bug fixes that correct actual issues
+     * API changes (parameters, return types, etc.)
+     * Data structure modifications
+     * Performance optimizations
+     * Security vulnerability fixes
+     * Error handling improvements
+
+3. Count the number of effective code lines changed and non-effective code lines changed:
+   - For each file, analyze line by line to determine if changes are effective or non-effective
+   - Count both added and removed lines, but categorize them correctly
+   - For mixed changes (both effective and non-effective in same line), count as effective
+   - Provide a breakdown of effective vs. non-effective changes by file
+
+4. Estimate how many effective working hours an experienced programmer (5-10+ years) would need:
+   - Base your estimate primarily on effective code changes, not total changes
+   - For purely non-effective changes (only formatting/style):
+     * 0.1-0.2 hours for small files
+     * 0.3-0.5 hours for large files with extensive formatting
+   - For effective changes, consider:
+     * Complexity of the logic being modified
+     * Domain knowledge required to understand the code
+     * Testing requirements for the changes
+     * Integration complexity with other components
+   - Be realistic - experienced programmers work efficiently but still need time to:
+     * Understand existing code
+     * Design appropriate solutions
+     * Implement changes carefully
+     * Test and verify correctness
+5. Scores for the following aspects (1-10 scale):
    - Readability
    - Efficiency
    - Security
@@ -2875,8 +3121,10 @@ Please format your response as JSON with the following fields:
 - documentation: (score 1-10)
 - code_style: (score 1-10)
 - overall_score: (score 1-10)
-- estimated_hours: (number of hours)
-- comments: (your detailed analysis)
+- effective_code_lines: (number of lines with actual logic/functionality changes)
+- non_effective_code_lines: (number of lines with formatting, whitespace, comment changes)
+- estimated_hours: (number of hours based primarily on effective changes)
+- comments: (your detailed analysis including breakdown of effective vs non-effective changes)
 """
 
         logger.info("Preparing to evaluate combined diff")
@@ -2929,6 +3177,18 @@ Please format your response as JSON with the following fields:
                                 logger.warning(f"Missing field {field} in evaluation, setting default value")
                                 eval_data[field] = 5
 
+                    # Add effective and non-effective code lines if not present
+                    if "effective_code_lines" not in eval_data:
+                        # Estimate based on additions and deletions
+                        logger.warning("Missing effective_code_lines in evaluation, estimating")
+                        # Assume 60% of changes are effective by default
+                        eval_data["effective_code_lines"] = int(total_additions * 0.6) + int(total_deletions * 0.6)
+
+                    if "non_effective_code_lines" not in eval_data:
+                        logger.warning("Missing non_effective_code_lines in evaluation, estimating")
+                        # Assume 40% of changes are non-effective by default
+                        eval_data["non_effective_code_lines"] = int(total_additions * 0.4) + int(total_deletions * 0.4)
+
                     # If overall_score is not provided, calculate it
                     if "overall_score" not in eval_data or not eval_data["overall_score"]:
                         score_fields = ["readability", "efficiency", "security", "structure",
@@ -2941,7 +3201,7 @@ Please format your response as JSON with the following fields:
                         logger.warning("Missing estimated_hours in evaluation, calculating default")
                         eval_data["estimated_hours"] = self._estimate_default_hours(total_additions, total_deletions)
 
-                    # Log all scores
+                    # Log all scores and code line counts
                     logger.info(f"Whole commit evaluation scores: " +
                                f"readability={eval_data.get('readability', 'N/A')}, " +
                                f"efficiency={eval_data.get('efficiency', 'N/A')}, " +
@@ -2951,6 +3211,8 @@ Please format your response as JSON with the following fields:
                                f"documentation={eval_data.get('documentation', 'N/A')}, " +
                                f"code_style={eval_data.get('code_style', 'N/A')}, " +
                                f"overall_score={eval_data.get('overall_score', 'N/A')}, " +
+                               f"effective_code_lines={eval_data.get('effective_code_lines', 'N/A')}, " +
+                               f"non_effective_code_lines={eval_data.get('non_effective_code_lines', 'N/A')}, " +
                                f"estimated_hours={eval_data.get('estimated_hours', 'N/A')}")
 
                 except Exception as e:
@@ -3102,6 +3364,24 @@ Please format your response as JSON with the following fields:
         whole_commit_evaluation = ""
         if "whole_commit_evaluation" in evaluation_results:
             eval_data = evaluation_results["whole_commit_evaluation"]
+
+            # Include effective and non-effective code lines if available
+            code_lines_info = ""
+            if "effective_code_lines" in eval_data or "non_effective_code_lines" in eval_data:
+                effective_lines = eval_data.get('effective_code_lines', 'N/A')
+                non_effective_lines = eval_data.get('non_effective_code_lines', 'N/A')
+                total_lines = (effective_lines if isinstance(effective_lines, int) else 0) + (non_effective_lines if isinstance(non_effective_lines, int) else 0)
+
+                if total_lines > 0 and isinstance(effective_lines, int) and isinstance(non_effective_lines, int):
+                    effective_percentage = (effective_lines / total_lines) * 100 if total_lines > 0 else 0
+                    code_lines_info = f"""
+- Effective Code Lines: {effective_lines} ({effective_percentage:.1f}% of total changes)
+- Non-Effective Code Lines: {non_effective_lines} ({100 - effective_percentage:.1f}% of total changes)"""
+                else:
+                    code_lines_info = f"""
+- Effective Code Lines: {effective_lines}
+- Non-Effective Code Lines: {non_effective_lines}"""
+
             whole_commit_evaluation = f"""
 Whole Commit Evaluation:
 - Readability: {eval_data.get('readability', 'N/A')}/10
@@ -3111,7 +3391,7 @@ Whole Commit Evaluation:
 - Error Handling: {eval_data.get('error_handling', 'N/A')}/10
 - Documentation: {eval_data.get('documentation', 'N/A')}/10
 - Code Style: {eval_data.get('code_style', 'N/A')}/10
-- Overall Score: {eval_data.get('overall_score', 'N/A')}/10
+- Overall Score: {eval_data.get('overall_score', 'N/A')}/10{code_lines_info}
 - Comments: {eval_data.get('comments', 'No comments available.')}
 """
 

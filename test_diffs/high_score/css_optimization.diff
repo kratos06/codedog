@@ -1,0 +1,323 @@
+diff --git a/src/styles/main.css b/src/styles/main.css
+index abcdef0..1234567 100644
+--- a/src/styles/main.css
++++ b/src/styles/main.css
+@@ -1,72 +1,105 @@
+-/* Main Styles */
+-body {
+-  font-family: Arial, sans-serif;
+-  margin: 0;
+-  padding: 0;
+-  background-color: #f5f5f5;
+-  color: #333;
+-}
++:root {
++  /* Color variables */
++  --primary-color: #3498db;
++  --secondary-color: #2ecc71;
++  --accent-color: #e74c3c;
++  --text-color: #333333;
++  --text-light: #666666;
++  --bg-color: #f5f5f5;
++  --bg-dark: #e0e0e0;
++  --white: #ffffff;
++  --black: #000000;
++  
++  /* Spacing variables */
++  --spacing-xs: 0.25rem;
++  --spacing-sm: 0.5rem;
++  --spacing-md: 1rem;
++  --spacing-lg: 1.5rem;
++  --spacing-xl: 2rem;
++  
++  /* Font variables */
++  --font-family: 'Roboto', Arial, sans-serif;
++  --font-size-sm: 0.875rem;
++  --font-size-md: 1rem;
++  --font-size-lg: 1.25rem;
++  --font-size-xl: 1.5rem;
++  
++  /* Border variables */
++  --border-radius-sm: 4px;
++  --border-radius-md: 8px;
++  --border-radius-lg: 12px;
++  
++  /* Shadow variables */
++  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
++  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
++  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
++}
++
++/* Base styles */
++* {
++  box-sizing: border-box;
++  margin: 0;
++  padding: 0;
++}
++
++body {
++  font-family: var(--font-family);
++  background-color: var(--bg-color);
++  color: var(--text-color);
++  line-height: 1.6;
++}
+ 
+ .container {
+-  max-width: 1200px;
++  width: 100%;
++  max-width: 1280px;
+   margin: 0 auto;
+-  padding: 20px;
++  padding: var(--spacing-md);
+ }
+ 
+-/* Header Styles */
++/* Header styles */
+ header {
+-  background-color: #3498db;
+-  color: white;
+-  padding: 20px 0;
+-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
++  background-color: var(--primary-color);
++  color: var(--white);
++  padding: var(--spacing-md) 0;
++  box-shadow: var(--shadow-sm);
++  position: sticky;
++  top: 0;
++  z-index: 100;
+ }
+ 
+ .logo {
+-  font-size: 24px;
++  font-size: var(--font-size-xl);
+   font-weight: bold;
++  text-transform: uppercase;
++  letter-spacing: 1px;
+ }
+ 
+-/* Navigation Styles */
++/* Navigation styles */
+ nav ul {
+-  list-style: none;
++  list-style-type: none;
+   display: flex;
+-  margin: 0;
+-  padding: 0;
++  gap: var(--spacing-md);
+ }
+ 
+ nav li {
+-  margin-right: 20px;
++  position: relative;
+ }
+ 
+ nav a {
+-  color: white;
++  color: var(--white);
+   text-decoration: none;
+-  font-weight: bold;
++  font-weight: 500;
++  transition: color 0.3s ease;
++  padding: var(--spacing-sm) var(--spacing-md);
++  border-radius: var(--border-radius-sm);
+ }
+ 
+ nav a:hover {
+-  text-decoration: underline;
++  background-color: rgba(255, 255, 255, 0.1);
+ }
+ 
+-/* Button Styles */
+-.btn {
+-  display: inline-block;
+-  padding: 10px 20px;
+-  background-color: #3498db;
+-  color: white;
+-  border: none;
+-  border-radius: 4px;
+-  cursor: pointer;
+-  text-decoration: none;
+-}
+-
+-.btn:hover {
+-  background-color: #2980b9;
+-}
+-
+-.btn-primary {
+-  background-color: #3498db;
+-}
+-
+-.btn-secondary {
+-  background-color: #2ecc71;
+-}
+-
+-.btn-danger {
+-  background-color: #e74c3c;
++nav a.active {
++  font-weight: 700;
++  background-color: rgba(255, 255, 255, 0.2);
+ }
+ 
+-/* Card Styles */
++/* Card component */
+ .card {
+-  background-color: white;
+-  border-radius: 4px;
+-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+-  padding: 20px;
+-  margin-bottom: 20px;
++  background-color: var(--white);
++  border-radius: var(--border-radius-md);
++  box-shadow: var(--shadow-md);
++  padding: var(--spacing-lg);
++  margin-bottom: var(--spacing-lg);
++  transition: transform 0.3s ease, box-shadow 0.3s ease;
++}
++
++.card:hover {
++  transform: translateY(-5px);
++  box-shadow: var(--shadow-lg);
+ }
+ 
+ .card-title {
+-  font-size: 18px;
++  font-size: var(--font-size-lg);
+   font-weight: bold;
+-  margin-bottom: 10px;
++  margin-bottom: var(--spacing-sm);
++  color: var(--text-color);
+ }
+ 
+ .card-content {
+-  margin-bottom: 15px;
++  margin-bottom: var(--spacing-md);
++  color: var(--text-light);
+ }
+ 
+-/* Form Styles */
+-.form-group {
+-  margin-bottom: 15px;
++/* Button component */
++.btn {
++  display: inline-block;
++  padding: var(--spacing-sm) var(--spacing-lg);
++  background-color: var(--primary-color);
++  color: var(--white);
++  border: none;
++  border-radius: var(--border-radius-sm);
++  cursor: pointer;
++  text-decoration: none;
++  font-weight: 500;
++  text-align: center;
++  transition: background-color 0.3s ease, transform 0.2s ease;
++  user-select: none;
+ }
+ 
+-label {
+-  display: block;
+-  margin-bottom: 5px;
+-  font-weight: bold;
++.btn:hover {
++  background-color: darken(var(--primary-color), 10%);
++  transform: translateY(-2px);
+ }
+ 
+-input[type="text"],
+-input[type="email"],
+-input[type="password"],
+-textarea {
+-  width: 100%;
+-  padding: 10px;
+-  border: 1px solid #ddd;
+-  border-radius: 4px;
++.btn:active {
++  transform: translateY(0);
+ }
+ 
+-/* Footer Styles */
+-footer {
+-  background-color: #333;
+-  color: white;
+-  padding: 20px 0;
+-  text-align: center;
+-  margin-top: 40px;
++.btn-primary {
++  background-color: var(--primary-color);
+ }
+ 
+-/* Responsive Styles */
+-@media (max-width: 768px) {
+-  nav ul {
+-    flex-direction: column;
+-  }
+-  
+-  nav li {
+-    margin-right: 0;
+-    margin-bottom: 10px;
+-  }
++.btn-secondary {
++  background-color: var(--secondary-color);
++}
++
++.btn-accent {
++  background-color: var(--accent-color);
++}
++
++.btn-outline {
++  background-color: transparent;
++  border: 2px solid var(--primary-color);
++  color: var(--primary-color);
++}
++
++.btn-outline:hover {
++  background-color: var(--primary-color);
++  color: var(--white);
++}
++
++/* Utility classes */
++.text-center { text-align: center; }
++.text-right { text-align: right; }
++.text-left { text-align: left; }
++
++.mt-1 { margin-top: var(--spacing-sm); }
++.mt-2 { margin-top: var(--spacing-md); }
++.mt-3 { margin-top: var(--spacing-lg); }
++.mt-4 { margin-top: var(--spacing-xl); }
++
++.mb-1 { margin-bottom: var(--spacing-sm); }
++.mb-2 { margin-bottom: var(--spacing-md); }
++.mb-3 { margin-bottom: var(--spacing-lg); }
++.mb-4 { margin-bottom: var(--spacing-xl); }
++
++.p-1 { padding: var(--spacing-sm); }
++.p-2 { padding: var(--spacing-md); }
++.p-3 { padding: var(--spacing-lg); }
++.p-4 { padding: var(--spacing-xl); }
++
++/* Media queries */
++@media screen and (max-width: 768px) {
++  :root {
++    --spacing-lg: 1.25rem;
++    --spacing-xl: 1.75rem;
++  }
++  
++  nav ul {
++    flex-direction: column;
++    gap: var(--spacing-sm);
++  }
++  
++  .container {
++    padding: var(--spacing-sm);
++  }
++}
++
++@media screen and (max-width: 480px) {
++  :root {
++    --font-size-lg: 1.125rem;
++    --font-size-xl: 1.375rem;
++  }
++  
++  .card {
++    padding: var(--spacing-md);
++  }
+ }

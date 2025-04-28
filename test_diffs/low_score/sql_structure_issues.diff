@@ -1,0 +1,101 @@
+diff --git a/database/reports/customer_analysis.sql b/database/reports/customer_analysis.sql
+index 1234567..abcdefg 100644
+--- a/database/reports/customer_analysis.sql
++++ b/database/reports/customer_analysis.sql
+@@ -1,45 +1,97 @@
+--- Customer analysis queries
++-- no comments explaining purpose
+ 
+--- Get customer purchase summary
+-SELECT 
+-    c.customer_id,
+-    c.first_name,
+-    c.last_name,
+-    COUNT(o.order_id) AS total_orders,
+-    SUM(o.total_amount) AS total_spent,
+-    AVG(o.total_amount) AS average_order_value,
+-    MAX(o.order_date) AS last_order_date
+-FROM customers c
+-LEFT JOIN orders o ON c.customer_id = o.customer_id
+-GROUP BY 
+-    c.customer_id,
+-    c.first_name,
+-    c.last_name
+-ORDER BY total_spent DESC;
++-- inconsistent formatting
++SELECT c.customer_id,c.first_name,c.last_name,
++COUNT(o.order_id) AS total_orders,SUM(o.total_amount) AS total_spent,
++AVG(o.total_amount) AS average_order_value,MAX(o.order_date) AS last_order_date
++FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id GROUP BY c.customer_id,
++c.first_name,c.last_name ORDER BY total_spent DESC;
+ 
+--- Get customer segments
+-SELECT 
+-    customer_id,
+-    CASE 
+-        WHEN total_spent > 1000 THEN 'High Value'
+-        WHEN total_spent > 500 THEN 'Medium Value'
+-        ELSE 'Low Value'
+-    END AS customer_segment,
+-    total_spent
+-FROM (
+-    SELECT 
+-        c.customer_id,
+-        SUM(o.total_amount) AS total_spent
+-    FROM customers c
+-    LEFT JOIN orders o ON c.customer_id = o.customer_id
+-    GROUP BY c.customer_id
+-) AS customer_totals
+-ORDER BY total_spent DESC;
++-- inefficient query with cartesian product
++select * from customers, orders, order_items, products
++where customers.customer_id = orders.customer_id
++and orders.order_id = order_items.order_id
++and order_items.product_id = products.product_id;
+ 
+--- Get customer retention rate
+-WITH first_orders AS (
+-    SELECT 
+-        customer_id,
+-        MIN(DATE_TRUNC('month', order_date)) AS first_order_month
+-    FROM orders
+-    GROUP BY customer_id
+-),
+-monthly_activity AS (
+-    SELECT 
+-        DATE_TRUNC('month', order_date) AS order_month,
+-        COUNT(DISTINCT customer_id) AS active_customers
+-    FROM orders
+-    GROUP BY DATE_TRUNC('month', order_date)
+-),
+-customer_monthly_activity AS (
+-    SELECT 
+-        fo.customer_id,
+-        fo.first_order_month,
+-        DATE_TRUNC('month', o.order_date) AS order_month
+-    FROM first_orders fo
+-    JOIN orders o ON fo.customer_id = o.customer_id
+-    GROUP BY 
+-        fo.customer_id,
+-        fo.first_order_month,
+-        DATE_TRUNC('month', o.order_date)
+-)
+-SELECT 
+-    cma.first_order_month,
+-    COUNT(DISTINCT cma.customer_id) AS cohort_size,
+-    cma.order_month,
+-    COUNT(DISTINCT cma.customer_id) AS active_customers,
+-    ROUND(
+-        COUNT(DISTINCT cma.customer_id)::NUMERIC / 
+-        FIRST_VALUE(COUNT(DISTINCT cma.customer_id)) OVER (
+-            PARTITION BY cma.first_order_month 
+-            ORDER BY cma.order_month
+-        ) * 100, 
+-    2) AS retention_rate
+-FROM customer_monthly_activity cma
+-GROUP BY 
+-    cma.first_order_month,
+-    cma.order_month
+-ORDER BY 
+-    cma.first_order_month,
+-    cma.order_month;

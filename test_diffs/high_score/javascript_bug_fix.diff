@@ -1,0 +1,120 @@
+diff --git a/src/utils/authentication.js b/src/utils/authentication.js
+index 9876543..fedcba0 100644
+--- a/src/utils/authentication.js
++++ b/src/utils/authentication.js
+@@ -1,6 +1,7 @@
+ import axios from 'axios';
+ import jwt from 'jsonwebtoken';
+ import { API_URL } from '../config';
++import { logError } from './logger';
+ 
+ /**
+  * Authentication utility functions
+@@ -12,7 +13,7 @@ const TOKEN_EXPIRY_BUFFER = 300; // 5 minutes in seconds
+  * @param {string} username - User's username
+  * @param {string} password - User's password
+  * @returns {Promise<Object>} Authentication result with token
+- * @throws {Error} If authentication fails
++ * @throws {Error} If authentication fails or network error occurs
+  */
+ export const login = async (username, password) => {
+   try {
+@@ -22,9 +23,15 @@ export const login = async (username, password) => {
+     
+     localStorage.setItem(TOKEN_KEY, response.data.token);
+     return response.data;
+-  } catch (error) {
+-    console.error('Login failed:', error);
+-    throw new Error('Authentication failed');
++  } catch (error) {
++    // Log detailed error for debugging
++    logError('Login failed', error);
++    
++    // Provide more specific error messages based on error type
++    if (error.response && error.response.status === 401) {
++      throw new Error('Invalid username or password');
++    } else if (error.response && error.response.status === 429) {
++      throw new Error('Too many login attempts. Please try again later.');
++    } else if (error.code === 'ECONNABORTED' || !error.response) {
++      throw new Error('Network error. Please check your connection.');
++    } else {
++      throw new Error('Authentication failed. Please try again.');
++    }
+   }
+ };
+ 
+@@ -35,12 +42,16 @@ export const logout = () => {
+ };
+ 
+ /**
+- * Check if user is authenticated
++ * Check if user is authenticated with a valid token
+  * @returns {boolean} True if authenticated
+  */
+ export const isAuthenticated = () => {
+   const token = localStorage.getItem(TOKEN_KEY);
+-  return !!token;
++  if (!token) {
++    return false;
++  }
++  
++  try {
++    // Decode token to check expiration
++    const decoded = jwt.decode(token);
++    if (!decoded || !decoded.exp) {
++      return false;
++    }
++    
++    // Check if token is expired (with buffer time)
++    const currentTime = Math.floor(Date.now() / 1000);
++    return decoded.exp > currentTime + TOKEN_EXPIRY_BUFFER;
++  } catch (error) {
++    logError('Token validation error', error);
++    return false;
++  }
+ };
+ 
+ /**
+@@ -48,10 +59,19 @@ export const isAuthenticated = () => {
+  * @returns {string|null} The authentication token or null
+  */
+ export const getToken = () => {
+-  return localStorage.getItem(TOKEN_KEY);
++  const token = localStorage.getItem(TOKEN_KEY);
++  
++  // Check if token exists and is valid
++  if (token && isAuthenticated()) {
++    return token;
++  }
++  
++  // If token is invalid, clear it and return null
++  if (token) {
++    logout();
++  }
++  
++  return null;
+ };
+ 
+ /**
+- * Get user info from token
+- * @returns {Object|null} User info or null if not authenticated
++ * Get user info from token payload
++ * @returns {Object|null} User info or null if not authenticated or token is invalid
+  */
+ export const getUserInfo = () => {
+   const token = getToken();
+@@ -59,6 +79,12 @@ export const getUserInfo = () => {
+     return null;
+   }
+   
+-  const decoded = jwt.decode(token);
+-  return decoded;
++  try {
++    const decoded = jwt.decode(token);
++    return decoded && decoded.user ? decoded.user : null;
++  } catch (error) {
++    logError('Error decoding user info from token', error);
++    logout(); // Clear invalid token
++    return null;
++  }
+ };

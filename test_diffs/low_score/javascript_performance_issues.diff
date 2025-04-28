@@ -1,0 +1,153 @@
+diff --git a/src/utils/data-processor.js b/src/utils/data-processor.js
+index 1234567..abcdefg 100644
+--- a/src/utils/data-processor.js
++++ b/src/utils/data-processor.js
+@@ -1,30 +1,89 @@
+-import { fetchData } from './api';
++// No imports organized
++import {fetchData} from './api'
++import moment from 'moment';
++import _ from 'lodash';
++import $ from 'jquery';
+ 
+-/**
+- * Process data from API
+- * @param {string} endpoint - API endpoint
+- * @returns {Promise<Array>} Processed data
+- */
+-export const processData = async (endpoint) => {
+-  const data = await fetchData(endpoint);
+-  
+-  // Process data
+-  const processedData = data.map(item => ({
+-    id: item.id,
+-    name: item.name,
+-    value: item.value * 2
+-  }));
+-  
+-  return processedData;
+-};
++// Global variables
++var globalData = [];
++var processingComplete = false;
++
++// Memory leak - event listeners never removed
++$(document).ready(function() {
++  $('#processButton').click(function() {
++    processAllData();
++  });
++});
++
++// No documentation
++export const processData = async (endpoint) => {
++  try {
++    console.log("Processing data from: " + endpoint);
++    
++    // Inefficient API calls - no caching
++    const data = await fetchData(endpoint);
++    
++    // Inefficient data processing
++    let processedData = [];
++    
++    // Using for loop instead of map
++    for (let i = 0; i < data.length; i++) {
++      const item = data[i];
++      
++      // Creating new objects in a loop
++      const processed = {
++        id: item.id,
++        name: item.name,
++        value: item.value * 2,
++        // Using moment unnecessarily for each item
++        timestamp: moment().format('YYYY-MM-DD HH:mm:ss'),
++        // Deep cloning unnecessarily
++        originalData: _.cloneDeep(item)
++      };
++      
++      // Inefficient array manipulation
++      processedData.push(processed);
++      
++      // DOM manipulation in a loop
++      $('#dataList').append('<li>' + processed.name + '</li>');
++    }
++    
++    // Store in global variable
++    globalData = processedData;
++    processingComplete = true;
++    
++    return processedData;
++  } catch (error) {
++    console.log("Error processing data: " + error);
++    return [];
++  }
++};
++
++// Inefficient recursive function with no termination check
++export const findItemById = (items, id) => {
++  if (items.length === 0) {
++    return null;
++  }
++  
++  const [first, ...rest] = items;
++  
++  if (first.id === id) {
++    return first;
++  }
++  
++  return findItemById(rest, id);
++};
++
++// Function with multiple responsibilities
++export const processAllData = async () => {
++  // Multiple API calls with no batching
++  const users = await processData('/api/users');
++  const products = await processData('/api/products');
++  const orders = await processData('/api/orders');
++  
++  // Inefficient nested loops - O(n³) complexity
++  const result = [];
++  for (let user of users) {
++    for (let product of products) {
++      for (let order of orders) {
++        if (order.userId === user.id && order.productId === product.id) {
++          // Creating new objects in nested loops
++          result.push({
++            userName: user.name,
++            productName: product.name,
++            orderDate: order.date
++          });
++          
++          // DOM manipulation in nested loops
++          $('#resultTable').append(
++            '<tr><td>' + user.name + '</td><td>' + 
++            product.name + '</td><td>' + 
++            order.date + '</td></tr>'
++          );
++        }
++      }
++    }
++  }
++  
++  // Memory intensive operation
++  localStorage.setItem('processedData', JSON.stringify(result));
++  
++  return result;
++};
++
++// Inefficient sorting algorithm - bubble sort
++export const sortItems = (items) => {
++  const result = [...items];
++  
++  for (let i = 0; i < result.length; i++) {
++    for (let j = 0; j < result.length - i - 1; j++) {
++      if (result[j].value > result[j + 1].value) {
++        // Swap
++        const temp = result[j];
++        result[j] = result[j + 1];
++        result[j + 1] = temp;
++      }
++    }
++  }
++  
++  return result;
++};
