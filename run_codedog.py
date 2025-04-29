@@ -64,6 +64,9 @@ def parse_args():
     eval_parser.add_argument("--platform", choices=["github", "gitlab", "local"], default="local",
                          help="Platform to use (github, gitlab, or local, defaults to local)")
     eval_parser.add_argument("--gitlab-url", help="GitLab URL (defaults to https://gitlab.com or GITLAB_URL env var)")
+    eval_parser.add_argument("--batch", action="store_true", help="Use batched evaluation (multiple files in one LLM call)")
+    eval_parser.add_argument("--max-files-per-batch", type=int, default=5, help="Maximum number of files per batch (default: 5)")
+    eval_parser.add_argument("--max-tokens-per-batch", type=int, default=12000, help="Maximum tokens per batch (default: 12000)")
 
     # Commit review command
     commit_parser = subparsers.add_parser("commit", help="Review a specific commit")
@@ -77,6 +80,10 @@ def parse_args():
     commit_parser.add_argument("--platform", choices=["github", "gitlab", "local"], default="local",
                          help="Platform to use (github, gitlab, or local, defaults to local)")
     commit_parser.add_argument("--gitlab-url", help="GitLab URL (defaults to https://gitlab.com or GITLAB_URL env var)")
+    commit_parser.add_argument("--batch", action="store_true", help="Use batched evaluation (multiple files in one LLM call)")
+    commit_parser.add_argument("--whole-commit", action="store_true", help="Evaluate the entire commit as a whole and extract individual file evaluations")
+    commit_parser.add_argument("--max-files-per-batch", type=int, default=5, help="Maximum number of files per batch (default: 5)")
+    commit_parser.add_argument("--max-tokens-per-batch", type=int, default=12000, help="Maximum tokens per batch (default: 12000)")
 
     # Repository evaluation command
     repo_eval_parser = subparsers.add_parser("repo-eval", help="Evaluate all commits in a repository within a time period for all committers")
@@ -91,6 +98,10 @@ def parse_args():
     repo_eval_parser.add_argument("--platform", choices=["github", "gitlab", "local"], default="local",
                          help="Platform to use (github, gitlab, or local, defaults to local)")
     repo_eval_parser.add_argument("--gitlab-url", help="GitLab URL (defaults to https://gitlab.com or GITLAB_URL env var)")
+    repo_eval_parser.add_argument("--batch", action="store_true", help="Use batched evaluation (multiple files in one LLM call)")
+    repo_eval_parser.add_argument("--whole-commit", action="store_true", help="Evaluate the entire commit as a whole and extract individual file evaluations")
+    repo_eval_parser.add_argument("--max-files-per-batch", type=int, default=5, help="Maximum number of files per batch (default: 5)")
+    repo_eval_parser.add_argument("--max-tokens-per-batch", type=int, default=12000, help="Maximum tokens per batch (default: 12000)")
 
     return parser.parse_args()
 
@@ -956,6 +967,10 @@ async def evaluate_repository_code(
     email_addresses: Optional[List[str]] = None,
     platform: str = "local",
     gitlab_url: Optional[str] = None,
+    use_batched_evaluation: bool = False,
+    use_whole_commit_evaluation: bool = False,
+    max_files_per_batch: int = 5,
+    max_tokens_per_batch: int = 12000,
 ):
     """Evaluate all commits in a repository within a time period for all committers.
 
@@ -970,6 +985,10 @@ async def evaluate_repository_code(
         email_addresses: List of email addresses to send the report to
         platform: Platform to use (github, gitlab, or local)
         gitlab_url: GitLab URL (for GitLab platform only)
+        use_batched_evaluation: Whether to use batched evaluation (multiple files in one LLM call)
+        use_whole_commit_evaluation: Whether to evaluate the entire commit as a whole and extract individual file evaluations
+        max_files_per_batch: Maximum number of files to include in a single batch
+        max_tokens_per_batch: Maximum number of tokens to include in a single batch
 
     Returns:
         Dict[str, str]: Dictionary mapping author names to their report paths
@@ -979,8 +998,38 @@ async def evaluate_repository_code(
         date_slug = datetime.now().strftime("%Y%m%d")
         output_dir = f"codedog_repo_eval_{date_slug}"
 
+    logger.info(f"Using output directory: {output_dir}")
+    print(f"Output directory: {output_dir}")
+
     # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Created or verified output directory: {output_dir}")
+
+        # Verify directory exists and is writable
+        if not os.path.exists(output_dir):
+            error_msg = f"Failed to create output directory: {output_dir}"
+            logger.error(error_msg)
+            print(f"Error: {error_msg}")
+            return {}
+
+        # Test write access by creating a test file
+        test_file = os.path.join(output_dir, ".test_write_access")
+        try:
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            logger.info(f"Verified write access to output directory: {output_dir}")
+        except Exception as e:
+            error_msg = f"Output directory is not writable: {output_dir}, error: {str(e)}"
+            logger.error(error_msg)
+            print(f"Error: {error_msg}")
+            return {}
+    except Exception as e:
+        error_msg = f"Failed to create output directory: {output_dir}, error: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        print(f"Error: {error_msg}")
+        return {}
 
     # Get model
     model = load_model_by_name(model_name)
@@ -1010,7 +1059,65 @@ async def evaluate_repository_code(
         print(f"No commits found in repository {repo_path} for the specified time period")
         return {}
 
-    print(f"Found commits from {len(author_commits)} authors in the repository")
+    # 规范化作者名称，将相同邮箱的作者合并
+    normalized_author_commits = {}
+    email_to_author = {}  # 邮箱到规范化作者名称的映射
+
+    # 第一步：创建邮箱到作者的映射
+    for author_key in author_commits:
+        # 尝试从作者键中提取邮箱
+        email_match = re.search(r'<([^>]+)>', author_key)
+        if email_match:
+            email = email_match.group(1).lower()  # 转为小写以确保匹配
+
+            # 如果这个邮箱已经映射到一个作者，使用已有的映射
+            if email in email_to_author:
+                normalized_author = email_to_author[email]
+                logger.info(f"Mapping author '{author_key}' to '{normalized_author}' based on email '{email}'")
+            else:
+                # 否则，将这个邮箱映射到当前作者
+                normalized_author = author_key
+                email_to_author[email] = author_key
+                logger.info(f"New email mapping: '{email}' -> '{normalized_author}'")
+        else:
+            # 如果没有邮箱，使用原始作者名称
+            normalized_author = author_key
+            logger.info(f"No email found for author '{author_key}', using as is")
+
+        # 将当前作者的提交添加到规范化的作者名下
+        if normalized_author not in normalized_author_commits:
+            normalized_author_commits[normalized_author] = author_commits[author_key]
+        else:
+            # 合并提交
+            commits, file_diffs, stats = author_commits[author_key]
+            norm_commits, norm_file_diffs, norm_stats = normalized_author_commits[normalized_author]
+
+            # 合并提交列表
+            norm_commits.extend(commits)
+
+            # 合并文件差异字典
+            norm_file_diffs.update(file_diffs)
+
+            # 更新统计信息
+            norm_stats["total_added_lines"] += stats["total_added_lines"]
+            norm_stats["total_deleted_lines"] += stats["total_deleted_lines"]
+            norm_stats["total_effective_lines"] += stats["total_effective_lines"]
+
+            # 如果total_files是集合，合并集合；如果是数字，相加
+            if isinstance(norm_stats["total_files"], set) and isinstance(stats["total_files"], set):
+                norm_stats["total_files"].update(stats["total_files"])
+            elif isinstance(norm_stats["total_files"], int) and isinstance(stats["total_files"], int):
+                # 这种情况下我们无法准确合并，只能相加（可能会有重复）
+                norm_stats["total_files"] += stats["total_files"]
+
+            # 更新规范化的作者提交
+            normalized_author_commits[normalized_author] = (norm_commits, norm_file_diffs, norm_stats)
+
+            logger.info(f"Merged {len(commits)} commits from '{author_key}' into '{normalized_author}'")
+
+    # 使用规范化后的作者提交
+    author_commits = normalized_author_commits
+    print(f"After normalization: Found commits from {len(author_commits)} unique authors in the repository")
 
     # Initialize evaluator
     evaluator = DiffEvaluator(model)
@@ -1032,7 +1139,18 @@ async def evaluate_repository_code(
         print(f"\nEvaluating {len(commits)} commits by {author}...")
 
         # Generate output file name for this author
-        author_slug = author.replace("@", "_at_").replace(" ", "_").replace("/", "_").replace("<", "").replace(">", "")
+        # 从作者名称中提取邮箱，用于文件名
+        email_match = re.search(r'<([^>]+)>', author)
+        if email_match:
+            # 如果有邮箱，使用邮箱作为文件名的一部分
+            email = email_match.group(1)
+            # 提取邮箱用户名部分（去掉@及后面的域名）
+            email_username = email.split('@')[0] if '@' in email else email
+            author_slug = email_username.replace(".", "_").replace("-", "_")
+        else:
+            # 如果没有邮箱，使用作者名称
+            author_slug = author.replace("@", "_at_").replace(" ", "_").replace("/", "_").replace("<", "").replace(">", "")
+
         output_file = os.path.join(output_dir, f"codedog_eval_{author_slug}.md")
 
         # Timing and statistics
@@ -1042,7 +1160,15 @@ async def evaluate_repository_code(
             with get_openai_callback() as cb:
                 # Perform evaluation
                 print(f"Evaluating code commits for {author}...")
-                evaluation_results = await evaluator.evaluate_commits(commits, commit_file_diffs)
+                evaluation_results = await evaluator.evaluate_commits(
+                    commits,
+                    commit_file_diffs,
+                    verbose=True,
+                    use_batched_evaluation=use_batched_evaluation,
+                    use_whole_commit_evaluation=use_whole_commit_evaluation,
+                    max_files_per_batch=max_files_per_batch,
+                    max_tokens_per_batch=max_tokens_per_batch
+                )
 
                 # Generate Markdown report
                 report = generate_evaluation_markdown(evaluation_results)
@@ -1053,6 +1179,34 @@ async def evaluate_repository_code(
 
             # Add evaluation statistics
             elapsed_time = time.time() - start_time
+
+            # Calculate effective and non-effective lines
+            total_added = code_stats.get('total_added_lines', 0)
+            total_deleted = code_stats.get('total_deleted_lines', 0)
+            total_effective = code_stats.get('total_effective_lines', 0)
+
+            # Get effective lines from evaluation results if available
+            effective_lines = 0
+            non_effective_lines = 0
+            for result in evaluation_results:
+                if hasattr(result, 'commit_evaluation') and result.commit_evaluation:
+                    if 'effective_code_lines' in result.commit_evaluation:
+                        effective_lines += result.commit_evaluation.get('effective_code_lines', 0)
+                    if 'non_effective_code_lines' in result.commit_evaluation:
+                        non_effective_lines += result.commit_evaluation.get('non_effective_code_lines', 0)
+
+            # If we have effective lines from evaluation, use those
+            if effective_lines > 0 or non_effective_lines > 0:
+                effective_percentage = (effective_lines / (effective_lines + non_effective_lines)) * 100 if (effective_lines + non_effective_lines) > 0 else 0
+                effective_lines_info = (
+                    f"- **Effective Code Lines**: {effective_lines} ({effective_percentage:.1f}% of total changes)\n"
+                    f"- **Non-Effective Code Lines**: {non_effective_lines} ({100 - effective_percentage:.1f}% of total changes)\n"
+                )
+            else:
+                # Otherwise use the calculated effective lines
+                effective_percentage = (total_effective / (total_added + total_deleted)) * 100 if (total_added + total_deleted) > 0 else 0
+                effective_lines_info = f"- **Effective Lines**: {total_effective} ({effective_percentage:.1f}% of total changes)\n"
+
             telemetry_info = (
                 f"\n## Evaluation Statistics\n\n"
                 f"- **Evaluation Model**: {model_name}\n"
@@ -1061,41 +1215,80 @@ async def evaluate_repository_code(
                 f"- **Cost**: ${total_cost:.4f}\n"
                 f"\n## Code Statistics\n\n"
                 f"- **Total Files Modified**: {code_stats.get('total_files', 0)}\n"
-                f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
-                f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
-                f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
+                f"- **Lines Added**: {total_added}\n"
+                f"- **Lines Deleted**: {total_deleted}\n"
+                f"{effective_lines_info}"
             )
 
             report += telemetry_info
 
             # Save report immediately after evaluation is complete
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(report)
+            try:
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(report)
 
-            # Add to author reports dictionary
-            author_reports[author] = output_file
+                # Verify file exists and has content
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    logger.info(f"Successfully wrote report to {output_file} ({os.path.getsize(output_file)} bytes)")
 
-            # Print completion message with clear indication that the file is ready
-            print(f"\n✅ Evaluation for {author} completed and saved to {output_file}")
-            print(f"   - Files: {code_stats.get('total_files', 0)}")
-            print(f"   - Lines: +{code_stats.get('total_added_lines', 0)}/-{code_stats.get('total_deleted_lines', 0)}")
-            print(f"   - Time: {elapsed_time:.2f} seconds")
-            print(f"   - Cost: ${total_cost:.4f}")
+                    # Add to author reports dictionary
+                    author_reports[author] = output_file
+
+                    # Print completion message with clear indication that the file is ready
+                    print(f"\n✅ Evaluation for {author} completed and saved to {output_file}")
+                    print(f"   - Files: {code_stats.get('total_files', 0)}")
+                    print(f"   - Lines: +{code_stats.get('total_added_lines', 0)}/-{code_stats.get('total_deleted_lines', 0)}")
+                    print(f"   - Time: {elapsed_time:.2f} seconds")
+                    print(f"   - Cost: ${total_cost:.4f}")
+                else:
+                    error_msg = f"Failed to write report for {author}: File does not exist or is empty"
+                    logger.error(error_msg)
+                    print(f"\n❌ {error_msg}")
+            except Exception as e:
+                error_msg = f"Error writing report for {author}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                print(f"\n❌ {error_msg}")
 
             # Add to summary report
+            # Get effective lines from evaluation results if available
+            effective_lines = 0
+            non_effective_lines = 0
+            for result in evaluation_results:
+                if hasattr(result, 'commit_evaluation') and result.commit_evaluation:
+                    if 'effective_code_lines' in result.commit_evaluation:
+                        effective_lines += result.commit_evaluation.get('effective_code_lines', 0)
+                    if 'non_effective_code_lines' in result.commit_evaluation:
+                        non_effective_lines += result.commit_evaluation.get('non_effective_code_lines', 0)
+
+            # Use LLM evaluated effective lines if available, otherwise use default calculation
+            effective_line_count = effective_lines if effective_lines > 0 else code_stats.get('total_effective_lines', 0)
+
             summary_report += f"### {author}\n\n"
             summary_report += f"- **Commits**: {len(commits)}\n"
             summary_report += f"- **Files Modified**: {code_stats.get('total_files', 0)}\n"
             summary_report += f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
             summary_report += f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
-            summary_report += f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
+            summary_report += f"- **Effective Lines**: {effective_line_count}\n"
             summary_report += f"- **Report**: [{os.path.basename(output_file)}]({os.path.basename(output_file)})\n\n"
 
             # Update the summary file after each committer is evaluated
             summary_file = os.path.join(output_dir, "summary.md")
-            with open(summary_file, "w", encoding="utf-8") as f:
-                f.write(summary_report)
-            logger.info(f"Updated summary report with {author}'s evaluation")
+            try:
+                with open(summary_file, "w", encoding="utf-8") as f:
+                    f.write(summary_report)
+
+                # Verify summary file exists and has content
+                if os.path.exists(summary_file) and os.path.getsize(summary_file) > 0:
+                    logger.info(f"Successfully updated summary report with {author}'s evaluation ({os.path.getsize(summary_file)} bytes)")
+                    print(f"Summary report updated: {summary_file}")
+                else:
+                    error_msg = f"Failed to write summary report: File does not exist or is empty"
+                    logger.error(error_msg)
+                    print(f"Error: {error_msg}")
+            except Exception as e:
+                error_msg = f"Error writing summary report: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                print(f"Error: {error_msg}")
 
         except Exception as e:
             # Log the error but continue with other authors
@@ -1112,13 +1305,29 @@ async def evaluate_repository_code(
             error_report += f"- **Files Modified**: {code_stats.get('total_files', 0)}\n"
             error_report += f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
             error_report += f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
+            # In error case, we use the default calculation since we don't have LLM evaluation
+            error_report += f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
 
             # Save the error report
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(error_report)
+            try:
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(error_report)
 
-            # Add to author reports dictionary
-            author_reports[author] = output_file
+                # Verify file exists and has content
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    logger.info(f"Successfully wrote error report to {output_file} ({os.path.getsize(output_file)} bytes)")
+
+                    # Add to author reports dictionary
+                    author_reports[author] = output_file
+                    print(f"Error report saved to {output_file}")
+                else:
+                    error_msg = f"Failed to write error report for {author}: File does not exist or is empty"
+                    logger.error(error_msg)
+                    print(f"Error: {error_msg}")
+            except Exception as e:
+                error_msg = f"Error writing error report for {author}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                print(f"Error: {error_msg}")
 
             # Add error entry to summary report
             summary_report += f"### {author} ❌\n\n"
@@ -1129,9 +1338,22 @@ async def evaluate_repository_code(
 
             # Update the summary file after each committer is evaluated (even if there's an error)
             summary_file = os.path.join(output_dir, "summary.md")
-            with open(summary_file, "w", encoding="utf-8") as f:
-                f.write(summary_report)
-            logger.info(f"Updated summary report with error for {author}")
+            try:
+                with open(summary_file, "w", encoding="utf-8") as f:
+                    f.write(summary_report)
+
+                # Verify summary file exists and has content
+                if os.path.exists(summary_file) and os.path.getsize(summary_file) > 0:
+                    logger.info(f"Successfully updated summary report with error for {author} ({os.path.getsize(summary_file)} bytes)")
+                    print(f"Summary report updated: {summary_file}")
+                else:
+                    error_msg = f"Failed to write summary report: File does not exist or is empty"
+                    logger.error(error_msg)
+                    print(f"Error: {error_msg}")
+            except Exception as e:
+                error_msg = f"Error writing summary report: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                print(f"Error: {error_msg}")
 
     # Final summary report is already saved incrementally, just print a message
     summary_file = os.path.join(output_dir, "summary.md")
@@ -1166,8 +1388,34 @@ async def evaluate_developer_code(
     email_addresses: Optional[List[str]] = None,
     platform: str = "local",
     gitlab_url: Optional[str] = None,
+    use_batched_evaluation: bool = False,
+    use_whole_commit_evaluation: bool = False,
+    max_files_per_batch: int = 5,
+    max_tokens_per_batch: int = 12000,
 ):
-    """Evaluate a developer's code commits in a time period."""
+    """
+    Evaluate a developer's code commits in a time period.
+
+    Args:
+        author: Developer's name or email
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        repo_path: Repository path or name (e.g. owner/repo for remote repositories)
+        include_extensions: List of file extensions to include
+        exclude_extensions: List of file extensions to exclude
+        model_name: Name of the model to use for evaluation
+        output_file: Path to save the report to
+        email_addresses: List of email addresses to send the report to
+        platform: Platform to use (github, gitlab, or local)
+        gitlab_url: GitLab URL (for GitLab platform only)
+        use_batched_evaluation: Whether to use batched evaluation (multiple files in one LLM call)
+        use_whole_commit_evaluation: Whether to evaluate the entire commit as a whole and extract individual file evaluations
+        max_files_per_batch: Maximum number of files to include in a single batch
+        max_tokens_per_batch: Maximum number of tokens to include in a single batch
+
+    Returns:
+        Generated report as a string
+    """
     # Generate default output file name if not provided
     if not output_file:
         author_slug = author.replace("@", "_at_").replace(" ", "_").replace("/", "_")
@@ -1222,7 +1470,34 @@ async def evaluate_developer_code(
     with get_openai_callback() as cb:
         # Perform evaluation
         print("Evaluating code commits...")
-        evaluation_results = await evaluator.evaluate_commits(commits, commit_file_diffs)
+        # Use function parameters for batch evaluation, but allow environment variables to override if not explicitly set
+        if not use_batched_evaluation and os.environ.get("USE_BATCHED_EVALUATION", "false").lower() == "true":
+            use_batched_evaluation = True
+            print("Batch evaluation enabled via environment variable")
+
+        # Allow environment variables to override max_files_per_batch and max_tokens_per_batch
+        if os.environ.get("MAX_FILES_PER_BATCH"):
+            max_files_per_batch = int(os.environ.get("MAX_FILES_PER_BATCH"))
+            print(f"Using MAX_FILES_PER_BATCH from environment: {max_files_per_batch}")
+
+        if os.environ.get("MAX_TOKENS_PER_BATCH"):
+            max_tokens_per_batch = int(os.environ.get("MAX_TOKENS_PER_BATCH"))
+            print(f"Using MAX_TOKENS_PER_BATCH from environment: {max_tokens_per_batch}")
+
+        if use_batched_evaluation:
+            print(f"Using batched evaluation (multiple files in one LLM call)")
+            print(f"- Max files per batch: {max_files_per_batch}")
+            print(f"- Max tokens per batch: {max_tokens_per_batch}")
+
+        evaluation_results = await evaluator.evaluate_commits(
+            commits,
+            commit_file_diffs,
+            verbose=True,
+            use_batched_evaluation=use_batched_evaluation,
+            use_whole_commit_evaluation=use_whole_commit_evaluation,
+            max_files_per_batch=max_files_per_batch,
+            max_tokens_per_batch=max_tokens_per_batch
+        )
 
         # Generate Markdown report
         report = generate_evaluation_markdown(evaluation_results)
@@ -1233,6 +1508,34 @@ async def evaluate_developer_code(
 
     # Add evaluation statistics
     elapsed_time = time.time() - start_time
+
+    # Calculate effective and non-effective lines
+    total_added = code_stats.get('total_added_lines', 0)
+    total_deleted = code_stats.get('total_deleted_lines', 0)
+    total_effective = code_stats.get('total_effective_lines', 0)
+
+    # Get effective lines from evaluation results if available
+    effective_lines = 0
+    non_effective_lines = 0
+    for result in evaluation_results:
+        if hasattr(result, 'commit_evaluation') and result.commit_evaluation:
+            if 'effective_code_lines' in result.commit_evaluation:
+                effective_lines += result.commit_evaluation.get('effective_code_lines', 0)
+            if 'non_effective_code_lines' in result.commit_evaluation:
+                non_effective_lines += result.commit_evaluation.get('non_effective_code_lines', 0)
+
+    # If we have effective lines from evaluation, use those
+    if effective_lines > 0 or non_effective_lines > 0:
+        effective_percentage = (effective_lines / (effective_lines + non_effective_lines)) * 100 if (effective_lines + non_effective_lines) > 0 else 0
+        effective_lines_info = (
+            f"- **Effective Code Lines**: {effective_lines} ({effective_percentage:.1f}% of total changes)\n"
+            f"- **Non-Effective Code Lines**: {non_effective_lines} ({100 - effective_percentage:.1f}% of total changes)\n"
+        )
+    else:
+        # Otherwise use the calculated effective lines
+        effective_percentage = (total_effective / (total_added + total_deleted)) * 100 if (total_added + total_deleted) > 0 else 0
+        effective_lines_info = f"- **Effective Lines**: {total_effective} ({effective_percentage:.1f}% of total changes)\n"
+
     telemetry_info = (
         f"\n## Evaluation Statistics\n\n"
         f"- **Evaluation Model**: {model_name}\n"
@@ -1241,9 +1544,9 @@ async def evaluate_developer_code(
         f"- **Cost**: ${total_cost:.4f}\n"
         f"\n## Code Statistics\n\n"
         f"- **Total Files Modified**: {code_stats.get('total_files', 0)}\n"
-        f"- **Lines Added**: {code_stats.get('total_added_lines', 0)}\n"
-        f"- **Lines Deleted**: {code_stats.get('total_deleted_lines', 0)}\n"
-        f"- **Effective Lines**: {code_stats.get('total_effective_lines', 0)}\n"
+        f"- **Lines Added**: {total_added}\n"
+        f"- **Lines Deleted**: {total_deleted}\n"
+        f"{effective_lines_info}"
     )
 
     report += telemetry_info
@@ -1430,6 +1733,10 @@ async def review_commit(
     email_addresses: Optional[List[str]] = None,
     platform: str = "local",
     gitlab_url: Optional[str] = None,
+    use_batched_evaluation: bool = False,
+    use_whole_commit_evaluation: bool = False,
+    max_files_per_batch: int = 5,
+    max_tokens_per_batch: int = 12000,
 ):
     """Review a specific commit.
 
@@ -1443,6 +1750,10 @@ async def review_commit(
         email_addresses: List of email addresses to send the report to
         platform: Platform to use (github, gitlab, or local)
         gitlab_url: GitLab URL (for GitLab platform only)
+        use_batched_evaluation: Whether to use batched evaluation (multiple files in one LLM call)
+        use_whole_commit_evaluation: Whether to evaluate the entire commit as a whole and extract individual file evaluations
+        max_files_per_batch: Maximum number of files to include in a single batch
+        max_tokens_per_batch: Maximum number of tokens to include in a single batch
     """
     logger.info(f"Starting commit review for {commit_hash}")
     logger.info(f"Parameters: repo_path={repo_path}, platform={platform}, model={model_name}")
@@ -1534,7 +1845,25 @@ async def review_commit(
         # Perform review
         print("Reviewing code changes...")
         logger.info(f"Starting commit evaluation for {commit_hash}")
-        review_results = await evaluator.evaluate_commit(commit_hash, commit_diff)
+
+        # Log evaluation settings
+        if use_whole_commit_evaluation:
+            logger.info(f"Using whole commit evaluation")
+            print(f"Using whole commit evaluation (all files evaluated together)")
+        elif use_batched_evaluation:
+            logger.info(f"Using batched evaluation with max {max_files_per_batch} files per batch and max {max_tokens_per_batch} tokens per batch")
+            print(f"Using batched evaluation (multiple files in one LLM call)")
+            print(f"- Max files per batch: {max_files_per_batch}")
+            print(f"- Max tokens per batch: {max_tokens_per_batch}")
+
+        review_results = await evaluator.evaluate_commit(
+            commit_hash,
+            commit_diff,
+            use_batched_evaluation=use_batched_evaluation,
+            use_whole_commit_evaluation=use_whole_commit_evaluation,
+            max_files_per_batch=max_files_per_batch,
+            max_tokens_per_batch=max_tokens_per_batch
+        )
         logger.info(f"Commit evaluation completed, got results for {len(review_results.get('files', []))} files")
 
         # Log evaluation results summary
@@ -1779,6 +2108,13 @@ def main():
         # Get email addresses
         email_addresses = parse_emails(args.email or os.environ.get("NOTIFICATION_EMAILS", ""))
 
+        # Log batch evaluation settings if enabled
+        if args.batch:
+            logger.info(f"Using batched evaluation with max {args.max_files_per_batch} files per batch and max {args.max_tokens_per_batch} tokens per batch")
+            print(f"Using batched evaluation (multiple files in one LLM call)")
+            print(f"- Max files per batch: {args.max_files_per_batch}")
+            print(f"- Max tokens per batch: {args.max_tokens_per_batch}")
+
         # Run evaluation
         report = asyncio.run(evaluate_developer_code(
             author=args.author,
@@ -1792,6 +2128,9 @@ def main():
             email_addresses=email_addresses,
             platform=args.platform,
             gitlab_url=args.gitlab_url,
+            use_batched_evaluation=args.batch,
+            max_files_per_batch=args.max_files_per_batch,
+            max_tokens_per_batch=args.max_tokens_per_batch,
         ))
 
         if report:
@@ -1838,6 +2177,17 @@ def main():
 
         # Run commit review
         logger.info("Starting commit review process")
+
+        # Log evaluation settings
+        if args.whole_commit:
+            logger.info(f"Using whole commit evaluation")
+            print(f"Using whole commit evaluation (all files evaluated together)")
+        elif args.batch:
+            logger.info(f"Using batched evaluation with max {args.max_files_per_batch} files per batch and max {args.max_tokens_per_batch} tokens per batch")
+            print(f"Using batched evaluation (multiple files in one LLM call)")
+            print(f"- Max files per batch: {args.max_files_per_batch}")
+            print(f"- Max tokens per batch: {args.max_tokens_per_batch}")
+
         try:
             report = asyncio.run(review_commit(
                 commit_hash=args.commit_hash,
@@ -1849,6 +2199,10 @@ def main():
                 email_addresses=email_addresses,
                 platform=args.platform,
                 gitlab_url=args.gitlab_url,
+                use_batched_evaluation=args.batch,
+                use_whole_commit_evaluation=args.whole_commit,
+                max_files_per_batch=args.max_files_per_batch,
+                max_tokens_per_batch=args.max_tokens_per_batch,
             ))
 
             logger.info("Commit review completed successfully")
@@ -1910,6 +2264,17 @@ def main():
 
         # Run repository evaluation
         logger.info("Starting repository evaluation process")
+
+        # Log evaluation settings
+        if args.whole_commit:
+            logger.info(f"Using whole commit evaluation")
+            print(f"Using whole commit evaluation (all files evaluated together)")
+        elif args.batch:
+            logger.info(f"Using batched evaluation with max {args.max_files_per_batch} files per batch and max {args.max_tokens_per_batch} tokens per batch")
+            print(f"Using batched evaluation (multiple files in one LLM call)")
+            print(f"- Max files per batch: {args.max_files_per_batch}")
+            print(f"- Max tokens per batch: {args.max_tokens_per_batch}")
+
         try:
             author_reports = asyncio.run(evaluate_repository_code(
                 repo_path=args.repo,
@@ -1922,6 +2287,10 @@ def main():
                 email_addresses=email_addresses,
                 platform=args.platform,
                 gitlab_url=args.gitlab_url,
+                use_batched_evaluation=args.batch,
+                use_whole_commit_evaluation=args.whole_commit,
+                max_files_per_batch=args.max_files_per_batch,
+                max_tokens_per_batch=args.max_tokens_per_batch,
             ))
 
             logger.info("Repository evaluation completed successfully")

@@ -140,9 +140,10 @@ Perform a comprehensive review of the code changes, conduct static analysis, and
 1. Provide a brief summary of the code's intended functionality and primary objectives
 2. Conduct a thorough static analysis of code logic, performance, and security
 3. Evaluate adherence to language-specific coding standards and best practices
-4. Identify specific issues, vulnerabilities, and improvement opportunities 
+4. Identify specific issues, vulnerabilities, and improvement opportunities
 5. Score the code in each dimension using the detailed scoring criteria
 6. Provide specific, actionable suggestions for improvement
+7. Analyze and distinguish between effective and non-effective code changes
 
 ## Language-Specific Standards:
 {language} code should follow these standards:
@@ -232,19 +233,41 @@ G. **Code Style**
      - **Score 7-10:** Full compliance with style guidelines, with consistent formatting and indentation.
    - Consider automated style checking tools relevant to the language.
 
+## Effective vs. Non-Effective Code Changes:
+Analyze the code changes and distinguish between:
+
+- **Effective code changes**: Lines that actually change functionality, fix issues, or improve the codebase in a meaningful way
+- **Non-effective code changes**: Lines that don't affect functionality or behavior, including:
+  - Formatting changes (whitespace, indentation, line breaks)
+  - Comment additions or modifications
+  - Variable/function/class renaming without behavior changes
+  - Moving code without changing logic
+  - Trivial refactoring that doesn't improve performance or maintainability
+  - Import reordering or reorganization
+  - Changing string quotes (single to double quotes)
+  - Adding/removing trailing commas
+  - Changing code style to match linter rules
+  - Removing unused imports or variables
+
+Count and report:
+1. The number of effective code lines changed
+2. The number of non-effective code lines changed
+3. For completely ineffective commits (only containing changes from the non-effective list above), set effective code lines to 0
+
 ## Scoring Methodology:
 - For each of the seven aspects (A–G), calculate an average score based on subcomponent evaluations
 - The **Final Overall Score** is the arithmetic mean of these seven aspect scores:
-  
+
   Final Score = (Readability + Efficiency & Performance + Security + Structure & Design + Error Handling + Documentation & Comments + Code Style) / 7
-  
+
 - Round the final score to one decimal place.
 
 ## Format your review as follows:
 1. **Code Functionality Overview**: Brief summary of functionality and primary objectives.
 2. **Detailed Code Analysis**: Evaluate all seven aspects with detailed subcomponent scoring.
-3. **Improvement Recommendations**: Specific suggestions with code examples where applicable.
-4. **Final Score & Summary**: Present the final score with key strengths and weaknesses.
+3. **Code Change Analysis**: Breakdown of effective vs. non-effective code changes with specific examples.
+4. **Improvement Recommendations**: Specific suggestions with code examples where applicable.
+5. **Final Score & Summary**: Present the final score with key strengths and weaknesses.
 
 ## IMPORTANT: Final Score Summary
 At the end of your review, include a clearly formatted score summary section like this:
@@ -257,9 +280,14 @@ At the end of your review, include a clearly formatted score summary section lik
 - Error Handling: [score] /10
 - Documentation & Comments: [score] /10
 - Code Style: [score] /10
-- Final Overall Score: [calculated_overall_score] /10
+- Overall Score: [calculated_overall_score] /10
+- Effective Code Lines: [number]
+- Non-Effective Code Lines: [number]
+- Estimated Hours: [number]
 
 Replace [score] with your actual numeric scores (e.g., 8.5).
+For effective/non-effective lines, provide actual counts based on your analysis.
+For estimated hours, provide a reasonable estimate based primarily on effective code changes.
 
 Here's the code diff from file {name}:
 ```{language}

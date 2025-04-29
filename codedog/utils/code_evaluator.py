@@ -14,38 +14,48 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import math
 import tiktoken  # 用于精确计算token数量
 
-# Function to log LLM inputs and outputs to separate files
-def log_llm_interaction(prompt, response, interaction_type="default"):
+# Function to log LLM inputs and outputs to a single file
+def log_llm_interaction(prompt, response, interaction_type="default", extra_info=None):
     """
-    Log LLM prompts to LLM_in.log and responses to LLM_out.log
+    Log LLM prompts and responses to a single LLM_interactions.log file
 
     Args:
         prompt: The prompt sent to the LLM
         response: The response received from the LLM
         interaction_type: A label to identify the type of interaction (e.g., "file_evaluation", "summary")
+        extra_info: Optional additional information to log (e.g., commit details for whole-commit evaluation)
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
 
-    # Log the prompt
-    with open("logs/LLM_in.log", "a", encoding="utf-8") as f:
-        f.write(f"\n\n{'='*50}\n")
+    # Log both prompt and response to the same file
+    with open("logs/LLM_interactions.log", "a", encoding="utf-8") as f:
+        f.write(f"\n\n{'='*80}\n")
         f.write(f"TIMESTAMP: {timestamp}\n")
         f.write(f"TYPE: {interaction_type}\n")
-        f.write(f"{'='*50}\n\n")
-        f.write(prompt)
-        f.write("\n\n")
 
-    # Log the response
-    with open("logs/LLM_out.log", "a", encoding="utf-8") as f:
-        f.write(f"\n\n{'='*50}\n")
-        f.write(f"TIMESTAMP: {timestamp}\n")
-        f.write(f"TYPE: {interaction_type}\n")
-        f.write(f"{'='*50}\n\n")
-        f.write(response)
-        f.write("\n\n")
+        # If we have extra info, log it
+        if extra_info:
+            f.write(f"INFO: {extra_info}\n")
+
+        f.write(f"{'='*80}\n\n")
+
+        # If we have a prompt, log it
+        if prompt:
+            f.write(f"[PROMPT]\n{'-'*50}\n")
+            f.write(prompt)
+            f.write("\n\n")
+
+        # If we have a response, log it
+        if response:
+            f.write(f"[RESPONSE]\n{'-'*50}\n")
+            f.write(response)
+            f.write("\n\n")
+
+        # Add a separator at the end
+        f.write(f"{'='*80}\n")
 
 # 导入 grimoire 模板
 from codedog.templates.grimoire_en import CODE_SUGGESTION
@@ -80,6 +90,8 @@ class CodeEvaluation(BaseModel):
     documentation: int = Field(description="Documentation and comments score (1-10)", ge=1, le=10)
     code_style: int = Field(description="Code style score (1-10)", ge=1, le=10)
     overall_score: float = Field(description="Overall score (1-10)", ge=1, le=10)
+    effective_code_lines: int = Field(description="Number of lines with actual logic/functionality changes", default=0)
+    non_effective_code_lines: int = Field(description="Number of lines with formatting, whitespace, comment changes", default=0)
     estimated_hours: float = Field(description="Estimated working hours for an experienced programmer (5-10+ years)", default=0.0)
     comments: str = Field(description="Evaluation comments and improvement suggestions")
 
@@ -408,7 +420,9 @@ When evaluating code changes (especially in diff format), carefully distinguish 
 - Indentation fixes without logic changes
 - Comment additions or modifications without code changes
 - Import reordering or reorganization
-- Variable/function renaming without behavior changes
+- Variable/function/class renaming without behavior changes
+- Moving code without changing logic
+- Trivial refactoring that doesn't improve performance or maintainability
 - Code reformatting (line wrapping, bracket placement)
 - Changing string quotes (single to double quotes)
 - Adding/removing trailing commas
@@ -803,7 +817,7 @@ Please conduct a comprehensive code review following these steps:
 
 3. **Code Change Classification**:
    - Carefully distinguish between effective and non-effective code changes
-   - Non-effective changes include: whitespace adjustments, indentation fixes, comment additions, import reordering, variable/function renaming without behavior changes, code reformatting, changing string quotes, etc.
+   - Non-effective changes include: whitespace adjustments, indentation fixes, comment additions, import reordering, variable/function/class renaming without behavior changes, moving code without changing logic, trivial refactoring that doesn't improve performance or maintainability, code reformatting, changing string quotes, etc.
    - Effective changes include: logic modifications, functionality additions/removals, algorithm changes, bug fixes, API changes, data structure modifications, performance optimizations, security fixes, etc.
 
 4. **Working Hours Estimation**:
@@ -1220,6 +1234,8 @@ Please conduct a comprehensive code review following these steps:
             "documentation": 5,
             "code_style": 5,
             "overall_score": 5.0,
+            "effective_code_lines": 0,
+            "non_effective_code_lines": 0,
             "estimated_hours": 0.0,
             "comments": f"Evaluation failed: {error_message}. The code may require manual review."
         }
@@ -1370,6 +1386,403 @@ Please conduct a comprehensive code review following these steps:
         # 默认返回通用编程语言
         return 'General'
 
+    async def evaluate_commits_batched(
+        self,
+        commits: List[CommitInfo],
+        commit_file_diffs: Dict[str, Dict[str, str]],
+        verbose: bool = False,
+        max_files_per_batch: int = 5,
+        max_tokens_per_batch: int = 12000,
+    ) -> List[FileEvaluationResult]:
+        """
+        Evaluate multiple commits by batching multiple files into a single LLM call.
+
+        This method significantly reduces the number of API calls by combining multiple
+        file diffs into a single request, then parsing the results to separate evaluations
+        for each file.
+
+        Args:
+            commits: List of commit information
+            commit_file_diffs: Dictionary mapping commit hashes to file diffs
+            verbose: Whether to print verbose progress information
+            max_files_per_batch: Maximum number of files to include in a single batch
+            max_tokens_per_batch: Maximum number of tokens to include in a single batch
+
+        Returns:
+            List of file evaluation results
+        """
+        # 打印统计信息
+        total_files = sum(len(diffs) for diffs in commit_file_diffs.values())
+        print(f"\n开始批量评估 {len(commits)} 个提交中的 {total_files} 个文件...")
+        print(f"当前速率设置: {self.token_bucket.tokens_per_minute:.0f} tokens/min")
+        print(f"批量评估设置: 每批最多 {max_files_per_batch} 个文件, 最多 {max_tokens_per_batch} 个令牌\n")
+
+        # 收集所有任务
+        all_tasks = []
+        for commit in commits:
+            if commit.hash not in commit_file_diffs:
+                continue
+
+            file_diffs = commit_file_diffs[commit.hash]
+            for file_path, file_diff in file_diffs.items():
+                # 估算令牌数量
+                estimated_tokens = len(file_diff.split()) * 1.2
+                all_tasks.append({
+                    "commit": commit,
+                    "file_path": file_path,
+                    "file_diff": file_diff,
+                    "estimated_tokens": estimated_tokens,
+                    "file_size": len(file_diff)
+                })
+
+        # 按文件大小排序，小文件先处理
+        all_tasks = sorted(all_tasks, key=lambda x: x["file_size"])
+
+        # 创建批次
+        batches = []
+        current_batch = []
+        current_batch_tokens = 0
+
+        for task in all_tasks:
+            # 如果添加这个文件会超过最大令牌数或最大文件数，则创建新批次
+            if (current_batch_tokens + task["estimated_tokens"] > max_tokens_per_batch or
+                len(current_batch) >= max_files_per_batch) and current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_batch_tokens = 0
+
+            current_batch.append(task)
+            current_batch_tokens += task["estimated_tokens"]
+
+        # 添加最后一个批次
+        if current_batch:
+            batches.append(current_batch)
+
+        print(f"将 {total_files} 个文件分成 {len(batches)} 个批次进行评估")
+
+        # 处理每个批次
+        results = []
+        start_time = time.time()
+        completed_files = 0
+
+        for batch_idx, batch in enumerate(batches):
+            batch_start_time = time.time()
+            print(f"处理批次 {batch_idx+1}/{len(batches)}, 包含 {len(batch)} 个文件")
+
+            try:
+                # 构建批量评估请求
+                batch_results = await self._evaluate_file_batch(batch)
+
+                # 处理批量评估结果
+                for task, evaluation in zip(batch, batch_results):
+                    # 创建 FileEvaluationResult 对象
+                    result = FileEvaluationResult(
+                        file_path=task["file_path"],
+                        commit_hash=task["commit"].hash,
+                        commit_message=task["commit"].message,
+                        date=task["commit"].date,
+                        author=task["commit"].author,
+                        evaluation=CodeEvaluation(**evaluation)
+                    )
+                    results.append(result)
+
+                # 更新进度
+                completed_files += len(batch)
+                batch_time = time.time() - batch_start_time
+                elapsed_time = time.time() - start_time
+                avg_time_per_batch = elapsed_time / (batch_idx + 1)
+                remaining_batches = len(batches) - (batch_idx + 1)
+                estimated_remaining_time = avg_time_per_batch * remaining_batches
+
+                print(f"批次 {batch_idx+1} 完成, 用时 {batch_time:.1f}s, 平均每个文件 {batch_time/len(batch):.1f}s")
+                print(f"总进度: {completed_files}/{total_files} 文件 " +
+                      f"({completed_files/total_files*100:.1f}%) " +
+                      f"- 已用时间: {elapsed_time:.1f}s " +
+                      f"- 预计剩余: {estimated_remaining_time:.1f}s")
+
+            except Exception as e:
+                logger.error(f"Error processing batch {batch_idx+1}: {str(e)}")
+                print(f"处理批次 {batch_idx+1} 时出错: {str(e)}")
+
+                # 为批次中的每个文件创建默认评价结果
+                for task in batch:
+                    evaluation = self._generate_default_scores(f"批量评价过程中出错: {str(e)}")
+
+                    result = FileEvaluationResult(
+                        file_path=task["file_path"],
+                        commit_hash=task["commit"].hash,
+                        commit_message=task["commit"].message,
+                        date=task["commit"].date,
+                        author=task["commit"].author,
+                        evaluation=CodeEvaluation(**evaluation)
+                    )
+                    results.append(result)
+
+                completed_files += len(batch)
+
+        # 打印统计信息
+        elapsed_time = time.time() - start_time
+        print(f"\n批量评估完成! 总用时: {elapsed_time:.1f}s")
+        print(f"平均每个批次: {elapsed_time/len(batches):.1f}s, 平均每个文件: {elapsed_time/total_files:.1f}s")
+        print(f"令牌桶统计: {self.token_bucket.get_stats()}")
+
+        return results
+
+    async def _evaluate_file_batch(self, batch: List[Dict]) -> List[Dict]:
+        """
+        Evaluate a batch of files in a single LLM call.
+
+        Args:
+            batch: List of dictionaries containing file information
+                Each dict should have: commit, file_path, file_diff, estimated_tokens, file_size
+
+        Returns:
+            List of evaluation results for each file in the batch
+        """
+        logger.info(f"Evaluating batch of {len(batch)} files")
+
+        # Log detailed information about each file in the batch
+        for i, file_info in enumerate(batch):
+            file_path = file_info.get("file_path", "Unknown")
+            file_size = file_info.get("file_size", 0)
+            estimated_tokens = file_info.get("estimated_tokens", 0)
+            logger.info(f"  Batch file {i+1}/{len(batch)}: {file_path} (size: {file_size} bytes, est. tokens: {int(estimated_tokens)})")
+
+            # Check if required fields are present
+            required_fields = ["file_path", "file_diff", "commit"]
+            missing_fields = [field for field in required_fields if field not in file_info or not file_info[field]]
+            if missing_fields:
+                logger.warning(f"  Missing required fields for file {file_path}: {missing_fields}")
+
+            # Check for diff_content field and convert to file_diff if needed
+            if "diff_content" in file_info and "file_diff" not in file_info:
+                file_info["file_diff"] = file_info["diff_content"]
+                logger.info(f"  Converted diff_content to file_diff for file {file_path}")
+
+        print(f"Processing batch with {len(batch)} files...")
+
+        # Combine all file diffs into a single prompt
+        combined_prompt = "I will provide you with multiple code diffs to evaluate. Please evaluate each file separately.\n\n"
+
+        for i, task in enumerate(batch):
+            file_path = task["file_path"]
+            file_diff = task["file_diff"]
+
+            # Determine language based on file extension
+            language = self._guess_language(file_path)
+
+            # Add file header and diff
+            combined_prompt += f"\n\n## FILE {i+1}: {file_path} (Language: {language})\n\n"
+            combined_prompt += f"```diff\n{file_diff}\n```\n"
+
+        # Add evaluation instructions
+        combined_prompt += "\n\n# EVALUATION INSTRUCTIONS\n"
+        combined_prompt += """
+For each file, provide a separate evaluation with the following scores (1-10 scale):
+1. Readability: Code clarity, naming, formatting
+2. Efficiency: Performance, resource usage, algorithmic efficiency
+3. Security: Protection against vulnerabilities, input validation
+4. Structure: Architecture, modularity, separation of concerns
+5. Error Handling: Robust error handling, edge cases
+6. Documentation: Comments, docstrings, self-documenting code
+7. Code Style: Adherence to language conventions and best practices
+8. Overall Score: Comprehensive evaluation considering all dimensions
+
+Also estimate how many effective working hours an experienced programmer (5-10+ years) would need to implement these changes.
+
+Format your response as a JSON array with one object per file, like this:
+```json
+[
+  {
+    "file_index": 1,
+    "readability": 8,
+    "efficiency": 7,
+    "security": 6,
+    "structure": 8,
+    "error_handling": 7,
+    "documentation": 6,
+    "code_style": 8,
+    "overall_score": 7.5,
+    "estimated_hours": 2.5,
+    "comments": "Detailed evaluation comments for file 1..."
+  },
+  {
+    "file_index": 2,
+    ...
+  }
+]
+```
+"""
+
+        # Clean the combined content
+        sanitized_prompt = self._sanitize_content(combined_prompt)
+
+        # Log the batch size
+        logger.info(f"Batch prompt size: {len(sanitized_prompt)} characters, approximately {len(sanitized_prompt.split()) * 1.2:.0f} tokens")
+
+        # Create messages for the model
+        messages = [HumanMessage(content=sanitized_prompt)]
+
+        # Track retries
+        max_retries = 2
+        retry_count = 0
+
+        while True:
+            try:
+                # Wait for token bucket if needed
+                await self.token_bucket.get_tokens(len(sanitized_prompt.split()) * 1.2)
+
+                # Get user message for logging
+                user_message = messages[0].content
+
+                # Call the model
+                logger.info(f"Sending batch of {len(batch)} files to model")
+                logger.info(f"Prompt size: {len(sanitized_prompt)} characters, approximately {len(sanitized_prompt.split()) * 1.2:.0f} tokens")
+                print(f"Sending batch request to model (est. {len(sanitized_prompt.split()) * 1.2:.0f} tokens)...")
+
+                start_time = time.time()
+                response = await self.model.agenerate(messages=[messages])
+                end_time = time.time()
+
+                # Get response text and log details
+                generated_text = response.generations[0][0].text
+                logger.info(f"Batch evaluation completed in {end_time - start_time:.2f} seconds")
+                logger.info(f"Response size: {len(generated_text)} characters")
+                print(f"Received response from model in {end_time - start_time:.2f} seconds")
+
+                # Log both prompt and response to the same file
+                log_llm_interaction(user_message, generated_text, interaction_type="batch_evaluation",
+                                  extra_info=f"Batch size: {len(batch)} files, ~{len(sanitized_prompt.split()) * 1.2:.0f} tokens")
+
+                # Extract JSON from response
+                json_str = self._extract_json(generated_text)
+                if not json_str:
+                    logger.warning("Failed to extract JSON from batch response, attempting to fix")
+                    json_str = self._fix_malformed_json(generated_text)
+
+                if not json_str:
+                    logger.error("Could not extract valid JSON from the batch response")
+                    # Create default evaluations for each file
+                    return [self._generate_default_scores(f"Failed to parse batch response for file {task['file_path']}")
+                            for task in batch]
+
+                # Parse JSON
+                try:
+                    evaluations = json.loads(json_str)
+
+                    # Validate that we have the correct number of evaluations
+                    if not isinstance(evaluations, list):
+                        logger.error(f"Expected a list of evaluations, got {type(evaluations)}")
+                        evaluations = [evaluations]  # Try to convert single object to list
+
+                    if len(evaluations) != len(batch):
+                        logger.warning(f"Expected {len(batch)} evaluations, got {len(evaluations)}. Padding with defaults.")
+                        # If we have fewer evaluations than files, add default evaluations
+                        while len(evaluations) < len(batch):
+                            missing_index = len(evaluations)
+                            evaluations.append(self._generate_default_scores(
+                                f"Missing evaluation for file {batch[missing_index]['file_path']}"
+                            ))
+                        # If we have more evaluations than files, truncate
+                        evaluations = evaluations[:len(batch)]
+
+                    # Ensure all required fields exist in each evaluation
+                    for i, eval_data in enumerate(evaluations):
+                        required_fields = ["readability", "efficiency", "security", "structure",
+                                          "error_handling", "documentation", "code_style", "overall_score", "comments"]
+                        for field in required_fields:
+                            if field not in eval_data:
+                                if field != "overall_score":  # overall_score can be calculated
+                                    logger.warning(f"Missing field {field} in evaluation {i+1}, setting default value")
+                                    eval_data[field] = 5
+
+                        # If overall_score is not provided, calculate it
+                        if "overall_score" not in eval_data or not eval_data["overall_score"]:
+                            score_fields = ["readability", "efficiency", "security", "structure",
+                                           "error_handling", "documentation", "code_style"]
+                            scores = [eval_data.get(field, 5) for field in score_fields]
+                            eval_data["overall_score"] = round(sum(scores) / len(scores), 1)
+
+                        # If estimated_hours is not provided, add a default
+                        if "estimated_hours" not in eval_data or not eval_data["estimated_hours"]:
+                            eval_data["estimated_hours"] = 0.5
+
+                    return evaluations
+
+                except Exception as e:
+                    logger.error(f"Error parsing batch evaluation: {e}", exc_info=True)
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        logger.warning(f"Retrying batch evaluation (attempt {retry_count}/{max_retries})")
+                        await asyncio.sleep(2 * retry_count)  # Exponential backoff
+                    else:
+                        logger.error("Max retries reached, returning default evaluations")
+                        return [self._generate_default_scores(f"Failed to parse batch evaluation after {max_retries} attempts")
+                                for task in batch]
+
+            except Exception as e:
+                error_message = str(e)
+                logger.error(f"Error during batch evaluation: {error_message}", exc_info=True)
+
+                # Check for specific error types
+                is_context_length_error = "context length" in error_message.lower() or "maximum context length" in error_message.lower()
+                is_rate_limit_error = "rate limit" in error_message.lower() or "too many requests" in error_message.lower()
+                is_deepseek_error = "deepseek" in error_message.lower() or "deepseek api" in error_message.lower()
+
+                if is_context_length_error:
+                    # If it's a context length error, split the batch and try again
+                    logger.warning("Context length error, splitting batch")
+                    if len(batch) == 1:
+                        # If we can't split further, return default evaluation
+                        logger.error("Cannot split batch further, returning default evaluation")
+                        return [self._generate_default_scores(f"Context length error for file {task['file_path']}")
+                                for task in batch]
+                    else:
+                        # Split the batch and evaluate each half separately
+                        mid = len(batch) // 2
+                        logger.info(f"Splitting batch of {len(batch)} files into batches of {mid} and {len(batch) - mid}")
+
+                        first_half = await self._evaluate_file_batch(batch[:mid])
+                        second_half = await self._evaluate_file_batch(batch[mid:])
+
+                        return first_half + second_half
+
+                elif is_rate_limit_error:
+                    # If it's a rate limit error, wait and retry
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        wait_time = 5 * (2 ** retry_count)
+                        logger.warning(f"Rate limit error, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error("Max retries reached, returning default evaluations")
+                        return [self._generate_default_scores(f"Rate limit error after {max_retries} attempts")
+                                for task in batch]
+
+                elif is_deepseek_error:
+                    # For DeepSeek API errors, retry at most twice, then abandon
+                    retry_count += 1
+                    if retry_count >= 2:
+                        logger.error("Max retries reached for DeepSeek API error, returning default evaluations")
+                        return [self._generate_default_scores(f"DeepSeek API error after {retry_count} attempts")
+                                for task in batch]
+                    else:
+                        wait_time = 5 * retry_count
+                        logger.warning(f"DeepSeek API error, retrying in {wait_time}s (attempt {retry_count}/2)")
+                        await asyncio.sleep(wait_time)
+
+                else:
+                    # For other errors, retry a few times
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        wait_time = 3 * retry_count
+                        logger.warning(f"Error during batch evaluation, retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error("Max retries reached, returning default evaluations")
+                        return [self._generate_default_scores(f"Evaluation error: {error_message}")
+                                for task in batch]
+
     def _sanitize_content(self, content: str) -> str:
         """清理内容中的异常字符，确保内容可以安全地发送到OpenAI API。
 
@@ -1494,11 +1907,43 @@ Please conduct a comprehensive code review following these steps:
 
             # 提取各个评分
             for line in scores_text.split('\n'):
+                # 匹配标准评分 (e.g., "- Readability: 8 /10")
                 match = re.search(r'- ([\w\s&]+):\s*(\d+(\.\d+)?)\s*/10', line)
                 if match:
                     key = match.group(1).strip().lower().replace(' & ', '_').replace(' ', '_')
                     value = float(match.group(2))
                     scores_dict[key] = value
+                    continue
+
+                # 匹配有效代码行数 (e.g., "- Effective Code Lines: 120")
+                effective_match = re.search(r'- Effective Code Lines:\s*(\d+)', line)
+                if effective_match:
+                    scores_dict['effective_code_lines'] = int(effective_match.group(1))
+                    continue
+
+                # 匹配非有效代码行数 (e.g., "- Non-Effective Code Lines: 30")
+                non_effective_match = re.search(r'- Non-Effective Code Lines:\s*(\d+)', line)
+                if non_effective_match:
+                    scores_dict['non_effective_code_lines'] = int(non_effective_match.group(1))
+                    continue
+
+                # 匹配有效添加行数 (e.g., "- Effective Additions: 100")
+                effective_additions_match = re.search(r'- Effective Additions:\s*(\d+)', line)
+                if effective_additions_match:
+                    scores_dict['effective_additions'] = int(effective_additions_match.group(1))
+                    continue
+
+                # 匹配有效删除行数 (e.g., "- Effective Deletions: 20")
+                effective_deletions_match = re.search(r'- Effective Deletions:\s*(\d+)', line)
+                if effective_deletions_match:
+                    scores_dict['effective_deletions'] = int(effective_deletions_match.group(1))
+                    continue
+
+                # 匹配估计工作时间 (e.g., "- Estimated Hours: 2.5")
+                hours_match = re.search(r'- Estimated Hours:\s*(\d+(\.\d+)?)', line)
+                if hours_match:
+                    scores_dict['estimated_hours'] = float(hours_match.group(1))
+                    continue
 
             # 提取评论部分
             analysis_match = re.search(r'## Detailed Code Analysis\s*\n([\s\S]*?)(?:\n##|\Z)', text)
@@ -1510,20 +1955,25 @@ Please conduct a comprehensive code review following these steps:
                 if improvement_match:
                     scores_dict['comments'] = improvement_match.group(1).strip()
                 else:
-                    # Try to extract any meaningful content from the response
-                    overview_match = re.search(r'## Code Functionality Overview\s*\n([\s\S]*?)(?:\n##|\Z)', text)
-                    if overview_match:
-                        scores_dict['comments'] = overview_match.group(1).strip()
+                    # 尝试提取代码变更分析部分
+                    change_analysis_match = re.search(r'## Code Change Analysis\s*\n([\s\S]*?)(?:\n##|\Z)', text)
+                    if change_analysis_match:
+                        scores_dict['comments'] = change_analysis_match.group(1).strip()
                     else:
-                        # Look for any section that might contain useful information
-                        for section_title in ["Summary", "Overview", "Analysis", "Evaluation", "Review", "Feedback"]:
-                            section_match = re.search(f'## {section_title}\s*\n([\s\S]*?)(?:\n##|\Z)', text, re.IGNORECASE)
-                            if section_match:
-                                scores_dict['comments'] = section_match.group(1).strip()
-                                break
+                        # Try to extract any meaningful content from the response
+                        overview_match = re.search(r'## Code Functionality Overview\s*\n([\s\S]*?)(?:\n##|\Z)', text)
+                        if overview_match:
+                            scores_dict['comments'] = overview_match.group(1).strip()
                         else:
-                            # If no sections found, use the first 500 characters of the response
-                            scores_dict['comments'] = "No detailed analysis section found. Response excerpt: " + text[:500].strip()
+                            # Look for any section that might contain useful information
+                            for section_title in ["Summary", "Overview", "Analysis", "Evaluation", "Review", "Feedback"]:
+                                section_match = re.search(f'## {section_title}\s*\n([\s\S]*?)(?:\n##|\Z)', text, re.IGNORECASE)
+                                if section_match:
+                                    scores_dict['comments'] = section_match.group(1).strip()
+                                    break
+                            else:
+                                # If no sections found, use the first 500 characters of the response
+                                scores_dict['comments'] = "No detailed analysis section found. Response excerpt: " + text[:500].strip()
 
             # 转换为 JSON 字符串
             if scores_dict and len(scores_dict) >= 8:  # 至少包含7个评分项和评论
@@ -1594,6 +2044,8 @@ Please conduct a comprehensive code review following these steps:
                 "documentation": 5,
                 "code_style": 5,
                 "overall_score": 5.0,
+                "effective_code_lines": 0,
+                "non_effective_code_lines": 0,
                 "estimated_hours": 0.0,
                 "comments": "No evaluation comments available. The API returned an empty response, so default scores are shown."
             }
@@ -1769,6 +2221,8 @@ Please conduct a comprehensive code review following these steps:
                     "documentation": 5,
                     "code_style": 5,
                     "overall_score": 5.0,
+                    "effective_code_lines": 0,
+                    "non_effective_code_lines": 0,
                     "estimated_hours": 0.0,
                     "comments": f"Unable to extract detailed evaluation comments. There was an error parsing the JSON response: {str(e)}. The code may require manual review."
                 }
@@ -1981,9 +2435,8 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
                     print(f"DEBUG: User input first 100 chars: '{user_message[:100]}...'")
                     print(f"DEBUG: User input length: {len(user_message)}")
 
-                    # Log the prompt to LLM_in.log
+                    # Get user message for logging
                     user_message = messages[0].content if len(messages) > 0 else "No user message"
-                    log_llm_interaction(user_message, "", interaction_type="diff_chunk_evaluation_prompt")
 
                     # Call the model
                     response = await self.model.agenerate(messages=[messages])
@@ -1992,8 +2445,9 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
                     # Get response text
                     generated_text = response.generations[0][0].text
 
-                    # Log the response to LLM_out.log
-                    log_llm_interaction("", generated_text, interaction_type="diff_chunk_evaluation_response")
+                    # Log both prompt and response to the same file
+                    log_llm_interaction(user_message, generated_text, interaction_type="diff_chunk_evaluation",
+                                       extra_info=f"Chunk {i+1}/{len(chunks)}")
 
                 # 解析响应
                 try:
@@ -2243,9 +2697,8 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
 
             logger.info(f"Sending request to model for {file_path}")
             start_time = time.time()
-            # Log the prompt to LLM_in.log
+            # Get user message for logging
             user_message = messages[0].content
-            log_llm_interaction(user_message, "", interaction_type="file_evaluation_prompt")
 
             # Call the model
             response = await self.model.agenerate(messages=[messages])
@@ -2255,8 +2708,9 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
             generated_text = response.generations[0][0].text
             logger.debug(f"Response size: {len(generated_text)} characters")
 
-            # Log the response to LLM_out.log
-            log_llm_interaction("", generated_text, interaction_type="file_evaluation_response")
+            # Log both prompt and response to the same file
+            log_llm_interaction(user_message, generated_text, interaction_type="file_evaluation",
+                              extra_info=f"File: {file_path}")
 
             # 尝试提取JSON部分
             logger.info(f"Extracting JSON from response for {file_path}")
@@ -2462,7 +2916,7 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
 
         # Calculate estimated hours if not provided
         if "estimated_hours" not in eval_data or not eval_data["estimated_hours"]:
-            estimated_hours = self._estimate_default_hours(additions, deletions)
+            estimated_hours = self._estimate_default_hours(additions, deletions, file_path)
             logger.info(f"Calculated default estimated hours for {file_path}: {estimated_hours}")
         else:
             estimated_hours = eval_data["estimated_hours"]
@@ -2564,16 +3018,16 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
             user_message = messages[0].content if len(messages) > 0 else "No user message"
             print(f"DEBUG: User input first 20 chars: '{user_message[:20]}...'")
 
-            # Log the prompt to LLM_in.log
+            # Get user message for logging
             user_message = messages[0].content
-            log_llm_interaction(user_message, "", interaction_type="file_evaluation_prompt")
 
             # Call the model
             response = await self.model.agenerate(messages=[messages])
             generated_text = response.generations[0][0].text
 
-            # Log the response to LLM_out.log
-            log_llm_interaction("", generated_text, interaction_type="file_evaluation_response")
+            # Log both prompt and response to the same file
+            log_llm_interaction(user_message, generated_text, interaction_type="file_evaluation",
+                              extra_info=f"File: {file_path}, +{additions}/-{deletions}")
 
             # 尝试提取JSON部分
             json_str = self._extract_json(generated_text)
@@ -2621,7 +3075,7 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
                         # Get additions and deletions from the diff
                         additions = len(re.findall(r'^\+', file_diff, re.MULTILINE))
                         deletions = len(re.findall(r'^-', file_diff, re.MULTILINE))
-                        eval_data["estimated_hours"] = self._estimate_default_hours(additions, deletions)
+                        eval_data["estimated_hours"] = self._estimate_default_hours(additions, deletions, file_path)
                         logger.info(f"Calculated default estimated hours: {eval_data['estimated_hours']}")
 
                     # 创建评价对象
@@ -2631,7 +3085,7 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
                     # Get additions and deletions from the diff
                     additions = len(re.findall(r'^\+', file_diff, re.MULTILINE))
                     deletions = len(re.findall(r'^-', file_diff, re.MULTILINE))
-                    estimated_hours = self._estimate_default_hours(additions, deletions)
+                    estimated_hours = self._estimate_default_hours(additions, deletions, file_path)
 
                     evaluation = CodeEvaluation(
                         readability=5,
@@ -2650,7 +3104,7 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
             # Get additions and deletions from the diff
             additions = len(re.findall(r'^\+', file_diff, re.MULTILINE))
             deletions = len(re.findall(r'^-', file_diff, re.MULTILINE))
-            estimated_hours = self._estimate_default_hours(additions, deletions)
+            estimated_hours = self._estimate_default_hours(additions, deletions, file_path)
 
             evaluation = CodeEvaluation(
                 readability=5,
@@ -2814,8 +3268,89 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
         commits: List[CommitInfo],
         commit_file_diffs: Dict[str, Dict[str, str]],
         verbose: bool = False,
+        use_batched_evaluation: bool = False,
+        use_whole_commit_evaluation: bool = False,
+        max_files_per_batch: int = 5,
+        max_tokens_per_batch: int = 12000,
     ) -> List[FileEvaluationResult]:
-        """Evaluate multiple commits with improved concurrency control."""
+        """
+        Evaluate multiple commits with improved concurrency control.
+
+        Args:
+            commits: List of commit information
+            commit_file_diffs: Dictionary mapping commit hashes to file diffs
+            verbose: Whether to print verbose progress information
+            use_batched_evaluation: Whether to use batched evaluation (multiple files in one LLM call)
+            use_whole_commit_evaluation: Whether to evaluate the entire commit as a whole and extract individual file evaluations
+            max_files_per_batch: Maximum number of files to include in a single batch
+            max_tokens_per_batch: Maximum number of tokens to include in a single batch
+
+        Returns:
+            List of file evaluation results
+        """
+        # If whole commit evaluation is enabled, evaluate each commit as a whole
+        if use_whole_commit_evaluation:
+            all_results = []
+            for commit in commits:
+                if commit.hash not in commit_file_diffs:
+                    continue
+
+                commit_diff_dict = {}
+                for file_path, file_diff in commit_file_diffs[commit.hash].items():
+                    # Create a diff info dictionary for each file
+                    # Estimate additions and deletions from the diff content
+                    additions = len(re.findall(r'^\+', file_diff, re.MULTILINE))
+                    deletions = len(re.findall(r'^-', file_diff, re.MULTILINE))
+                    commit_diff_dict[file_path] = {
+                        "diff": file_diff,
+                        "status": "M",  # Default to modified
+                        "additions": additions,
+                        "deletions": deletions
+                    }
+
+                # Evaluate the commit as a whole
+                whole_commit_evaluation = await self.evaluate_commit_as_whole(
+                    commit.hash,
+                    commit_diff_dict,
+                    extract_file_evaluations=True
+                )
+
+                # Process file evaluations from whole commit evaluation
+                if "file_evaluations" in whole_commit_evaluation:
+                    for file_path, evaluation in whole_commit_evaluation["file_evaluations"].items():
+                        # Create file evaluation result
+                        file_evaluation = FileEvaluationResult(
+                            file_path=file_path,
+                            commit_hash=commit.hash,
+                            commit_message=commit.message,
+                            date=commit.date,
+                            author=commit.author,
+                            evaluation=CodeEvaluation(
+                                readability=evaluation.get("readability", 5),
+                                efficiency=evaluation.get("efficiency", 5),
+                                security=evaluation.get("security", 5),
+                                structure=evaluation.get("structure", 5),
+                                error_handling=evaluation.get("error_handling", 5),
+                                documentation=evaluation.get("documentation", 5),
+                                code_style=evaluation.get("code_style", 5),
+                                overall_score=evaluation.get("overall_score", 5.0),
+                                estimated_hours=evaluation.get("estimated_hours", 0.5),
+                                comments=evaluation.get("comments", "")
+                            )
+                        )
+                        all_results.append(file_evaluation)
+
+            return all_results
+
+        # If batched evaluation is enabled, use the new method
+        elif use_batched_evaluation:
+            return await self.evaluate_commits_batched(
+                commits,
+                commit_file_diffs,
+                verbose=verbose,
+                max_files_per_batch=max_files_per_batch,
+                max_tokens_per_batch=max_tokens_per_batch
+            )
         # 打印统计信息
         total_files = sum(len(diffs) for diffs in commit_file_diffs.values())
         print(f"\n开始评估 {len(commits)} 个提交中的 {total_files} 个文件...")
@@ -2999,6 +3534,7 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
         self,
         commit_hash: str,
         commit_diff: Dict[str, Dict[str, Any]],
+        extract_file_evaluations: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate all diffs in a commit together as a whole.
 
@@ -3008,9 +3544,10 @@ IMPORTANT: Ensure your response is valid JSON that can be parsed programmaticall
         Args:
             commit_hash: The hash of the commit being evaluated
             commit_diff: Dictionary mapping file paths to their diffs and statistics
+            extract_file_evaluations: Whether to extract individual file evaluations from the whole commit evaluation
 
         Returns:
-            Dictionary containing evaluation results including estimated working hours
+            Dictionary containing evaluation results including estimated working hours and optionally individual file evaluations
         """
         logger.info(f"Starting whole-commit evaluation for {commit_hash}")
 
@@ -3106,6 +3643,8 @@ Please analyze the entire commit as a whole and provide:
    - Code Style
    - Overall Score
 
+6. Evaluate each file individually with scores for the same aspects (1-10 scale)
+
 Here's the complete diff for commit {commit_hash}:
 
 ```
@@ -3125,6 +3664,7 @@ Please format your response as JSON with the following fields:
 - non_effective_code_lines: (number of lines with formatting, whitespace, comment changes)
 - estimated_hours: (number of hours based primarily on effective changes)
 - comments: (your detailed analysis including breakdown of effective vs non-effective changes)
+- file_evaluations: (an object with file paths as keys, each containing individual evaluations with the same scoring fields)
 """
 
         logger.info("Preparing to evaluate combined diff")
@@ -3136,9 +3676,8 @@ Please format your response as JSON with the following fields:
 
             logger.info("Sending request to model for combined diff evaluation")
             start_time = time.time()
-            # Log the prompt to LLM_in.log
+            # Get user message for logging
             user_message = messages[0].content
-            log_llm_interaction(user_message, "", interaction_type="commit_evaluation_prompt")
 
             # Call the model
             response = await self.model.agenerate(messages=[messages])
@@ -3147,8 +3686,16 @@ Please format your response as JSON with the following fields:
 
             generated_text = response.generations[0][0].text
 
-            # Log the response to LLM_out.log
-            log_llm_interaction("", generated_text, interaction_type="commit_evaluation_response")
+            # Log both prompt and response to the same file with whole-commit info
+            commit_info = {
+                "commit_hash": commit_hash,
+                "files_count": len(commit_diff),
+                "total_additions": total_additions,
+                "total_deletions": total_deletions,
+                "estimated_tokens": estimated_tokens
+            }
+            log_llm_interaction(user_message, generated_text, interaction_type="whole_commit_evaluation",
+                               extra_info=f"Commit: {commit_hash}, Files: {len(commit_diff)}, +{total_additions}/-{total_deletions}, ~{estimated_tokens:.0f} tokens")
             logger.debug(f"Response size: {len(generated_text)} characters")
 
             # Extract JSON from response
@@ -3183,11 +3730,28 @@ Please format your response as JSON with the following fields:
                         logger.warning("Missing effective_code_lines in evaluation, estimating")
                         # Assume 60% of changes are effective by default
                         eval_data["effective_code_lines"] = int(total_additions * 0.6) + int(total_deletions * 0.6)
+                        logger.info(f"Estimated effective_code_lines: {eval_data['effective_code_lines']}")
+                    else:
+                        logger.info(f"Using LLM evaluated effective_code_lines: {eval_data['effective_code_lines']}")
 
                     if "non_effective_code_lines" not in eval_data:
                         logger.warning("Missing non_effective_code_lines in evaluation, estimating")
                         # Assume 40% of changes are non-effective by default
                         eval_data["non_effective_code_lines"] = int(total_additions * 0.4) + int(total_deletions * 0.4)
+                        logger.info(f"Estimated non_effective_code_lines: {eval_data['non_effective_code_lines']}")
+                    else:
+                        logger.info(f"Using LLM evaluated non_effective_code_lines: {eval_data['non_effective_code_lines']}")
+
+                    # Add effective additions and deletions if not present
+                    if "effective_additions" not in eval_data:
+                        logger.warning("Missing effective_additions in evaluation, estimating")
+                        # Assume 70% of effective lines are additions
+                        eval_data["effective_additions"] = int(eval_data["effective_code_lines"] * 0.7)
+
+                    if "effective_deletions" not in eval_data:
+                        logger.warning("Missing effective_deletions in evaluation, estimating")
+                        # Assume 30% of effective lines are deletions
+                        eval_data["effective_deletions"] = int(eval_data["effective_code_lines"] * 0.3)
 
                     # If overall_score is not provided, calculate it
                     if "overall_score" not in eval_data or not eval_data["overall_score"]:
@@ -3196,10 +3760,70 @@ Please format your response as JSON with the following fields:
                         scores = [eval_data.get(field, 5) for field in score_fields]
                         eval_data["overall_score"] = round(sum(scores) / len(scores), 1)
 
-                    # If estimated_hours is not provided, calculate a default
+                    # If estimated_hours is not provided, calculate a default with improved logic
                     if "estimated_hours" not in eval_data or not eval_data["estimated_hours"]:
                         logger.warning("Missing estimated_hours in evaluation, calculating default")
-                        eval_data["estimated_hours"] = self._estimate_default_hours(total_additions, total_deletions)
+
+                        # Calculate effective code lines if available
+                        effective_lines = eval_data.get("effective_code_lines", int(total_additions * 0.6) + int(total_deletions * 0.6))
+                        non_effective_lines = eval_data.get("non_effective_code_lines", int(total_additions * 0.4) + int(total_deletions * 0.4))
+
+                        # Calculate hours based on effective code lines with higher weight
+                        effective_hours = self._estimate_default_hours(
+                            int(effective_lines * 0.7),  # Consider 70% of effective lines as additions
+                            int(effective_lines * 0.3)   # Consider 30% of effective lines as deletions
+                        )
+
+                        # Calculate hours for non-effective code with lower weight
+                        non_effective_hours = self._estimate_default_hours(
+                            int(non_effective_lines * 0.7),
+                            int(non_effective_lines * 0.3)
+                        ) * 0.3  # Apply 30% weight to non-effective changes
+
+                        # Calculate total hours
+                        total_hours = effective_hours + non_effective_hours
+
+                        # Apply commit complexity factor based on number of files
+                        file_count = len(commit_diff)
+                        if file_count > 10:
+                            # For large commits with many files, add integration complexity
+                            complexity_factor = 1.2 + (min(file_count, 50) - 10) * 0.01  # Max +40% for 50+ files
+                        elif file_count > 5:
+                            # Medium complexity for 6-10 files
+                            complexity_factor = 1.1
+                        elif file_count > 1:
+                            # Slight complexity for 2-5 files
+                            complexity_factor = 1.05
+                        else:
+                            # No additional complexity for single file
+                            complexity_factor = 1.0
+
+                        # Apply complexity factor
+                        eval_data["estimated_hours"] = round(total_hours * complexity_factor * 10) / 10
+
+                    # If file_evaluations is not provided, create default evaluations for each file
+                    if "file_evaluations" not in eval_data and extract_file_evaluations:
+                        logger.warning("Missing file_evaluations in evaluation, creating defaults")
+                        eval_data["file_evaluations"] = {}
+
+                        # Create default evaluations for each file
+                        for file_path, diff_info in commit_diff.items():
+                            additions = diff_info.get("additions", 0)
+                            deletions = diff_info.get("deletions", 0)
+
+                            # Use the overall scores as default for each file
+                            eval_data["file_evaluations"][file_path] = {
+                                "readability": eval_data.get("readability", 5),
+                                "efficiency": eval_data.get("efficiency", 5),
+                                "security": eval_data.get("security", 5),
+                                "structure": eval_data.get("structure", 5),
+                                "error_handling": eval_data.get("error_handling", 5),
+                                "documentation": eval_data.get("documentation", 5),
+                                "code_style": eval_data.get("code_style", 5),
+                                "overall_score": eval_data.get("overall_score", 5),
+                                "estimated_hours": self._estimate_default_hours(additions, deletions, file_path),
+                                "comments": "Generated from whole commit evaluation."
+                            }
 
                     # Log all scores and code line counts
                     logger.info(f"Whole commit evaluation scores: " +
@@ -3215,47 +3839,143 @@ Please format your response as JSON with the following fields:
                                f"non_effective_code_lines={eval_data.get('non_effective_code_lines', 'N/A')}, " +
                                f"estimated_hours={eval_data.get('estimated_hours', 'N/A')}")
 
+                    # Log file evaluations if available
+                    if "file_evaluations" in eval_data:
+                        logger.info(f"Extracted evaluations for {len(eval_data['file_evaluations'])} files")
+
                 except Exception as e:
                     logger.error(f"Error parsing evaluation: {e}", exc_info=True)
                     eval_data = self._generate_default_scores(f"解析错误。原始响应: {generated_text[:500]}...")
-                    eval_data["estimated_hours"] = self._estimate_default_hours(total_additions, total_deletions)
+                    # Calculate estimated hours with improved logic for whole commit
+                    total_hours = 0
+                    for file_path, diff_info in commit_diff.items():
+                        additions = diff_info.get("additions", 0)
+                        deletions = diff_info.get("deletions", 0)
+                        file_hours = self._estimate_default_hours(additions, deletions, file_path)
+                        total_hours += file_hours
+
+                    # Apply integration factor for multiple files
+                    file_count = len(commit_diff)
+                    if file_count > 1:
+                        integration_factor = 1.0 + min(0.3, (file_count - 1) * 0.05)  # Max +30% for 7+ files
+                        total_hours *= integration_factor
+
+                    eval_data["estimated_hours"] = round(total_hours * 10) / 10
 
         except Exception as e:
             logger.error(f"Error during evaluation: {e}", exc_info=True)
             eval_data = self._generate_default_scores(f"评价过程中出错: {str(e)}")
-            eval_data["estimated_hours"] = self._estimate_default_hours(total_additions, total_deletions)
+            # Calculate estimated hours with improved logic for whole commit
+            total_hours = 0
+            for file_path, diff_info in commit_diff.items():
+                additions = diff_info.get("additions", 0)
+                deletions = diff_info.get("deletions", 0)
+                file_hours = self._estimate_default_hours(additions, deletions, file_path)
+                total_hours += file_hours
+
+            # Apply integration factor for multiple files
+            file_count = len(commit_diff)
+            if file_count > 1:
+                integration_factor = 1.0 + min(0.3, (file_count - 1) * 0.05)  # Max +30% for 7+ files
+                total_hours *= integration_factor
+
+            eval_data["estimated_hours"] = round(total_hours * 10) / 10
 
         return eval_data
 
-    def _estimate_default_hours(self, additions: int, deletions: int) -> float:
+    def _estimate_default_hours(self, additions: int, deletions: int, file_path: str = None) -> float:
         """Estimate default working hours based on additions and deletions.
 
         This is a fallback method when the model doesn't provide an estimate.
+        Uses a more granular approach with a minimum of 0.1 hours (6 minutes) for very small changes.
 
         Args:
             additions: Number of lines added
             deletions: Number of lines deleted
+            file_path: Optional file path to consider file type in estimation
 
         Returns:
             float: Estimated working hours
         """
-        # Simple heuristic:
-        # - Each 50 lines of additions takes about 1 hour for an experienced developer
-        # - Each 100 lines of deletions takes about 0.5 hour
-        # - Minimum 0.5 hours, maximum 40 hours (1 week)
-        estimated_hours = (additions / 50) + (deletions / 200)
-        return max(0.5, min(40, round(estimated_hours, 1)))
+        # Calculate total changes
+        total_changes = additions + deletions
+
+        # Base calculation with more granular approach
+        if total_changes <= 5:
+            # Very small changes (1-5 lines): 0.1 hours (6 minutes)
+            base_hours = 0.1
+        elif total_changes <= 10:
+            # Small changes (6-10 lines): 0.2 hours (12 minutes)
+            base_hours = 0.2
+        elif total_changes <= 20:
+            # Medium-small changes (11-20 lines): 0.3 hours (18 minutes)
+            base_hours = 0.3
+        elif total_changes <= 50:
+            # Medium changes (21-50 lines): 0.5-1 hour
+            base_hours = 0.5 + (total_changes - 20) * 0.016  # ~1 hour for 50 lines
+        elif total_changes <= 100:
+            # Medium-large changes (51-100 lines): 1-2 hours
+            base_hours = 1.0 + (total_changes - 50) * 0.02  # ~2 hours for 100 lines
+        elif total_changes <= 200:
+            # Large changes (101-200 lines): 2-3.5 hours
+            base_hours = 2.0 + (total_changes - 100) * 0.015  # ~3.5 hours for 200 lines
+        elif total_changes <= 500:
+            # Very large changes (201-500 lines): 3.5-8 hours
+            base_hours = 3.5 + (total_changes - 200) * 0.015  # ~8 hours for 500 lines
+        else:
+            # Massive changes (500+ lines): 8+ hours
+            base_hours = 8.0 + (total_changes - 500) * 0.01  # +1 hour per 100 lines beyond 500
+
+        # Apply complexity factor based on file type if file_path is provided
+        complexity_factor = 1.0
+        if file_path:
+            file_ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+
+            # Higher complexity for certain file types
+            if file_ext in ['.c', '.cpp', '.h', '.hpp']:
+                complexity_factor = 1.3  # C/C++ tends to be more complex
+            elif file_ext in ['.java', '.scala']:
+                complexity_factor = 1.2  # Java/Scala slightly more complex
+            elif file_ext in ['.py', '.js', '.ts']:
+                complexity_factor = 1.0  # Python/JavaScript/TypeScript standard complexity
+            elif file_ext in ['.html', '.css', '.md', '.txt', '.json', '.yaml', '.yml']:
+                complexity_factor = 0.8  # Markup/config files tend to be simpler
+
+            # Consider file path indicators of complexity
+            if 'test' in file_path.lower() or 'spec' in file_path.lower():
+                complexity_factor *= 0.9  # Test files often simpler to modify
+            if 'core' in file_path.lower() or 'engine' in file_path.lower():
+                complexity_factor *= 1.2  # Core functionality often more complex
+            if 'util' in file_path.lower() or 'helper' in file_path.lower():
+                complexity_factor *= 0.9  # Utility functions often simpler
+
+        # Apply the complexity factor
+        estimated_hours = base_hours * complexity_factor
+
+        # Round to 1 decimal place with proper precision
+        estimated_hours = round(estimated_hours * 10) / 10
+
+        # Ensure minimum of 0.1 hours and maximum of 40 hours (1 week)
+        return max(0.1, min(40, estimated_hours))
 
     async def evaluate_commit(
         self,
         commit_hash: str,
         commit_diff: Dict[str, Dict[str, Any]],
+        use_batched_evaluation: bool = False,
+        max_files_per_batch: int = 5,
+        max_tokens_per_batch: int = 12000,
+        use_whole_commit_evaluation: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate a specific commit's changes.
 
         Args:
             commit_hash: The hash of the commit being evaluated
             commit_diff: Dictionary mapping file paths to their diffs and statistics
+            use_batched_evaluation: Whether to use batched evaluation (multiple files in one LLM call)
+            max_files_per_batch: Maximum number of files to include in a single batch
+            max_tokens_per_batch: Maximum number of tokens to include in a single batch
+            use_whole_commit_evaluation: Whether to evaluate the entire commit as a whole and extract individual file evaluations
 
         Returns:
             Dictionary containing evaluation results
@@ -3277,30 +3997,226 @@ Please format your response as JSON with the following fields:
                 "total_files": len(commit_diff),
                 "total_additions": total_additions,
                 "total_deletions": total_deletions,
+                "total_effective_lines": 0,  # Will be updated with LLM evaluation results later
             }
         }
         logger.debug(f"Initialized evaluation results structure for commit {commit_hash}")
 
         # Evaluate each file
-        logger.info(f"Starting file-by-file evaluation for commit {commit_hash}")
-        for i, (file_path, diff_info) in enumerate(commit_diff.items()):
-            logger.info(f"Evaluating file {i+1}/{len(commit_diff)}: {file_path}")
-            logger.debug(f"File info: status={diff_info['status']}, additions={diff_info.get('additions', 0)}, deletions={diff_info.get('deletions', 0)}")
+        logger.info(f"Starting file evaluation for commit {commit_hash}")
 
-            # Use the new method for commit file evaluation
-            start_time = time.time()
-            file_evaluation = await self.evaluate_commit_file(
-                file_path,
-                diff_info["diff"],
-                diff_info["status"],
-                diff_info.get("additions", 0),
-                diff_info.get("deletions", 0),
-            )
-            end_time = time.time()
-            logger.info(f"File {file_path} evaluated in {end_time - start_time:.2f} seconds with score: {file_evaluation.get('overall_score', 'N/A')}")
+        # Check if we should use whole commit evaluation
+        if use_whole_commit_evaluation:
+            logger.info(f"Using whole commit evaluation")
+            print(f"Using whole commit evaluation (all files evaluated together)")
 
-            evaluation_results["files"].append(file_evaluation)
-            logger.debug(f"Added evaluation for {file_path} to results")
+            # Evaluate the entire commit as a whole and extract individual file evaluations
+            whole_commit_evaluation = await self.evaluate_commit_as_whole(commit_hash, commit_diff, extract_file_evaluations=True)
+
+            # Process file evaluations from whole commit evaluation
+            if "file_evaluations" in whole_commit_evaluation:
+                for file_path, evaluation in whole_commit_evaluation["file_evaluations"].items():
+                    # Get file info
+                    diff_info = commit_diff.get(file_path, {})
+                    status = diff_info.get("status", "M")
+                    additions = diff_info.get("additions", 0)
+                    deletions = diff_info.get("deletions", 0)
+
+                    # Create file evaluation result
+                    file_evaluation = {
+                        "path": file_path,
+                        "status": status,
+                        "additions": additions,
+                        "deletions": deletions,
+                        "readability": evaluation.get("readability", 5),
+                        "efficiency": evaluation.get("efficiency", 5),
+                        "security": evaluation.get("security", 5),
+                        "structure": evaluation.get("structure", 5),
+                        "error_handling": evaluation.get("error_handling", 5),
+                        "documentation": evaluation.get("documentation", 5),
+                        "code_style": evaluation.get("code_style", 5),
+                        "overall_score": evaluation.get("overall_score", 5.0),
+                        "estimated_hours": evaluation.get("estimated_hours", 0.5),
+                        "summary": evaluation.get("comments", "")[:100] + "..." if len(evaluation.get("comments", "")) > 100 else evaluation.get("comments", ""),
+                        "comments": evaluation.get("comments", "")
+                    }
+
+                    evaluation_results["files"].append(file_evaluation)
+                    logger.info(f"Added evaluation for {file_path} with score: {file_evaluation['overall_score']}")
+
+                # Store the whole commit evaluation for later use
+                evaluation_results["whole_commit_evaluation"] = {
+                    "readability": whole_commit_evaluation.get("readability", 5),
+                    "efficiency": whole_commit_evaluation.get("efficiency", 5),
+                    "security": whole_commit_evaluation.get("security", 5),
+                    "structure": whole_commit_evaluation.get("structure", 5),
+                    "error_handling": whole_commit_evaluation.get("error_handling", 5),
+                    "documentation": whole_commit_evaluation.get("documentation", 5),
+                    "code_style": whole_commit_evaluation.get("code_style", 5),
+                    "overall_score": whole_commit_evaluation.get("overall_score", 5),
+                    "effective_code_lines": whole_commit_evaluation.get("effective_code_lines", 0),
+                    "non_effective_code_lines": whole_commit_evaluation.get("non_effective_code_lines", 0),
+                    "estimated_hours": whole_commit_evaluation.get("estimated_hours", 0),
+                    "comments": whole_commit_evaluation.get("comments", "No comments available.")
+                }
+
+                # Add the estimated working hours to the evaluation results
+                evaluation_results["estimated_hours"] = whole_commit_evaluation.get("estimated_hours", 0)
+                logger.info(f"Estimated working hours: {evaluation_results['estimated_hours']}")
+
+                # Skip the additional whole commit evaluation below since we already have it
+                return evaluation_results
+
+        # Log batch evaluation settings if enabled
+        elif use_batched_evaluation:
+            logger.info(f"Using batched evaluation with max {max_files_per_batch} files per batch and max {max_tokens_per_batch} tokens per batch")
+            print(f"Using batched evaluation (max {max_files_per_batch} files per batch, max {max_tokens_per_batch} tokens per batch)")
+
+            # Prepare batches
+            batches = []
+            current_batch = []
+            current_batch_tokens = 0
+
+            # Collect file information for batching
+            file_info_list = []
+            for file_path, diff_info in commit_diff.items():
+                # Estimate tokens
+                diff_content = diff_info["diff"]
+                estimated_tokens = len(diff_content.split()) * 1.2
+
+                file_info = {
+                    "file_path": file_path,
+                    "file_diff": diff_content,  # Use file_diff to match _evaluate_file_batch parameter name
+                    "commit": commit_hash,      # Add commit hash for reference
+                    "status": diff_info["status"],
+                    "additions": diff_info.get("additions", 0),
+                    "deletions": diff_info.get("deletions", 0),
+                    "estimated_tokens": estimated_tokens,
+                    "file_size": len(diff_content)
+                }
+                file_info_list.append(file_info)
+
+            # Sort by file size (smaller files first)
+            file_info_list = sorted(file_info_list, key=lambda x: x["file_size"])
+
+            # Create batches
+            for file_info in file_info_list:
+                # If adding this file would exceed the token limit or max files per batch, create a new batch
+                if (current_batch_tokens + file_info["estimated_tokens"] > max_tokens_per_batch or
+                    len(current_batch) >= max_files_per_batch) and current_batch:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_batch_tokens = 0
+
+                current_batch.append(file_info)
+                current_batch_tokens += file_info["estimated_tokens"]
+
+            # Add the last batch if not empty
+            if current_batch:
+                batches.append(current_batch)
+
+            logger.info(f"Created {len(batches)} batches for {len(file_info_list)} files")
+            print(f"Created {len(batches)} batches for {len(file_info_list)} files")
+
+            # Process each batch
+            for batch_idx, batch in enumerate(batches):
+                logger.info(f"Processing batch {batch_idx+1}/{len(batches)} with {len(batch)} files")
+                print(f"Processing batch {batch_idx+1}/{len(batches)} with {len(batch)} files...")
+
+                try:
+                    # Use the batch evaluation method
+                    batch_start_time = time.time()
+                    batch_results = await self._evaluate_file_batch(batch)
+                    batch_end_time = time.time()
+                    logger.info(f"Batch {batch_idx+1} evaluated in {batch_end_time - batch_start_time:.2f} seconds")
+                    print(f"Batch {batch_idx+1} evaluated in {batch_end_time - batch_start_time:.2f} seconds")
+
+                    # Process batch results
+                    for file_info, evaluation in zip(batch, batch_results):
+                        file_path = file_info["file_path"]
+                        status = file_info["status"]
+                        additions = file_info["additions"]
+                        deletions = file_info["deletions"]
+
+                        # Create file evaluation result
+                        file_evaluation = {
+                            "path": file_path,
+                            "status": status,
+                            "additions": additions,
+                            "deletions": deletions,
+                            "readability": evaluation.get("readability", 5),
+                            "efficiency": evaluation.get("efficiency", 5),
+                            "security": evaluation.get("security", 5),
+                            "structure": evaluation.get("structure", 5),
+                            "error_handling": evaluation.get("error_handling", 5),
+                            "documentation": evaluation.get("documentation", 5),
+                            "code_style": evaluation.get("code_style", 5),
+                            "overall_score": evaluation.get("overall_score", 5.0),
+                            "estimated_hours": evaluation.get("estimated_hours", 0.5),
+                            "summary": evaluation.get("comments", "")[:100] + "..." if len(evaluation.get("comments", "")) > 100 else evaluation.get("comments", ""),
+                            "comments": evaluation.get("comments", "")
+                        }
+
+                        evaluation_results["files"].append(file_evaluation)
+                        logger.info(f"Added evaluation for {file_path} with score: {file_evaluation['overall_score']}")
+
+                except Exception as e:
+                    logger.error(f"Error processing batch {batch_idx+1}: {str(e)}", exc_info=True)
+                    print(f"Error processing batch {batch_idx+1}: {str(e)}")
+
+                    # Create default evaluations for each file in the batch
+                    for file_info in batch:
+                        file_path = file_info["file_path"]
+                        status = file_info["status"]
+                        additions = file_info["additions"]
+                        deletions = file_info["deletions"]
+
+                        # Create default file evaluation
+                        file_evaluation = {
+                            "path": file_path,
+                            "status": status,
+                            "additions": additions,
+                            "deletions": deletions,
+                            "readability": 5,
+                            "efficiency": 5,
+                            "security": 5,
+                            "structure": 5,
+                            "error_handling": 5,
+                            "documentation": 5,
+                            "code_style": 5,
+                            "overall_score": 5.0,
+                            "estimated_hours": self._estimate_default_hours(additions, deletions, file_path),
+                            "summary": f"Error during batch evaluation: {str(e)}",
+                            "comments": f"Error during batch evaluation: {str(e)}"
+                        }
+
+                        evaluation_results["files"].append(file_evaluation)
+                        logger.warning(f"Added default evaluation for {file_path} due to batch processing error")
+
+        else:
+            # Standard file-by-file evaluation
+            logger.info(f"Using standard file-by-file evaluation")
+            print("Using standard file-by-file evaluation")
+            for i, (file_path, diff_info) in enumerate(commit_diff.items()):
+                logger.info(f"Evaluating file {i+1}/{len(commit_diff)}: {file_path}")
+                print(f"Evaluating file {i+1}/{len(commit_diff)}: {file_path}")
+                logger.debug(f"File info: status={diff_info['status']}, additions={diff_info.get('additions', 0)}, deletions={diff_info.get('deletions', 0)}")
+
+                # Use the new method for commit file evaluation
+                start_time = time.time()
+                file_evaluation = await self.evaluate_commit_file(
+                    file_path,
+                    diff_info["diff"],
+                    diff_info["status"],
+                    diff_info.get("additions", 0),
+                    diff_info.get("deletions", 0),
+                )
+                end_time = time.time()
+                logger.info(f"File {file_path} evaluated in {end_time - start_time:.2f} seconds with score: {file_evaluation.get('overall_score', 'N/A')}")
+                print(f"File {file_path} evaluated in {end_time - start_time:.2f} seconds with score: {file_evaluation.get('overall_score', 'N/A')}")
+
+                evaluation_results["files"].append(file_evaluation)
+                logger.debug(f"Added evaluation for {file_path} to results")
 
         # Evaluate the entire commit as a whole to get estimated working hours
         logger.info("Evaluating entire commit as a whole")
@@ -3311,6 +4227,12 @@ Please format your response as JSON with the following fields:
         logger.info(f"Estimated working hours: {evaluation_results['estimated_hours']}")
 
         # Add whole commit evaluation scores
+        effective_code_lines = whole_commit_evaluation.get("effective_code_lines", int(evaluation_results['statistics']['total_additions'] * 0.6) + int(evaluation_results['statistics']['total_deletions'] * 0.6))
+        non_effective_code_lines = whole_commit_evaluation.get("non_effective_code_lines", int(evaluation_results['statistics']['total_additions'] * 0.4) + int(evaluation_results['statistics']['total_deletions'] * 0.4))
+
+        # Update statistics with effective code lines from LLM evaluation
+        evaluation_results['statistics']['total_effective_lines'] = effective_code_lines
+
         evaluation_results["whole_commit_evaluation"] = {
             "readability": whole_commit_evaluation.get("readability", 5),
             "efficiency": whole_commit_evaluation.get("efficiency", 5),
@@ -3320,6 +4242,8 @@ Please format your response as JSON with the following fields:
             "documentation": whole_commit_evaluation.get("documentation", 5),
             "code_style": whole_commit_evaluation.get("code_style", 5),
             "overall_score": whole_commit_evaluation.get("overall_score", 5),
+            "effective_code_lines": effective_code_lines,
+            "non_effective_code_lines": non_effective_code_lines,
             "comments": whole_commit_evaluation.get("comments", "No comments available.")
         }
 
@@ -3332,9 +4256,8 @@ Please format your response as JSON with the following fields:
         messages = [HumanMessage(content=summary_prompt)]
         logger.info("Sending summary request to model")
         start_time = time.time()
-        # Log the prompt to LLM_in.log
+        # Get user message for logging
         user_message = messages[0].content
-        log_llm_interaction(user_message, "", interaction_type="summary_prompt")
 
         # Call the model
         summary_response = await self.model.agenerate(messages=[messages])
@@ -3343,8 +4266,9 @@ Please format your response as JSON with the following fields:
 
         summary_text = summary_response.generations[0][0].text
 
-        # Log the response to LLM_out.log
-        log_llm_interaction("", summary_text, interaction_type="summary_response")
+        # Log both prompt and response to the same file
+        log_llm_interaction(user_message, summary_text, interaction_type="summary",
+                          extra_info=f"Commit: {commit_hash}, Files: {len(evaluation_results['files'])}")
         logger.debug(f"Summary text size: {len(summary_text)} characters")
         logger.debug(f"Summary text (first 100 chars): {summary_text[:100]}...")
 
@@ -3417,7 +4341,7 @@ If estimated working hours are provided, please comment on whether this estimate
 
 def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult]) -> str:
     """
-    生成评价结果的Markdown表格
+    生成评价结果的Markdown表格，按提交组织而不是按文件组织
 
     Args:
         evaluation_results: 文件评价结果列表
@@ -3439,12 +4363,59 @@ def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult])
     start_date = sorted_results[0].date.strftime("%Y-%m-%d") if sorted_results else "Unknown"
     end_date = sorted_results[-1].date.strftime("%Y-%m-%d") if sorted_results else "Unknown"
 
-    markdown += f"## Overview\n\n"
-    markdown += f"- **Developer**: {author}\n"
-    markdown += f"- **Time Range**: {start_date} to {end_date}\n"
-    markdown += f"- **Files Evaluated**: {len(sorted_results)}\n\n"
+    # 按提交组织结果
+    commits_dict = {}
+    for result in sorted_results:
+        commit_hash = result.commit_hash
+        if commit_hash not in commits_dict:
+            commits_dict[commit_hash] = {
+                "hash": commit_hash,
+                "message": result.commit_message,
+                "date": result.date,
+                "author": result.author,
+                "files": [],
+                "scores": {
+                    "readability": 0,
+                    "efficiency": 0,
+                    "security": 0,
+                    "structure": 0,
+                    "error_handling": 0,
+                    "documentation": 0,
+                    "code_style": 0,
+                    "overall_score": 0,
+                },
+                "estimated_hours": 0,  # 每个提交只计算一次工作时间
+                "has_estimated_hours": False,  # 标记是否有工作时间估算
+            }
 
-    # 计算平均分
+        # 添加文件到提交
+        commits_dict[commit_hash]["files"].append({
+            "file_path": result.file_path,
+            "evaluation": result.evaluation
+        })
+
+        # 累加分数
+        eval = result.evaluation
+        commits_dict[commit_hash]["scores"]["readability"] += eval.readability
+        commits_dict[commit_hash]["scores"]["efficiency"] += eval.efficiency
+        commits_dict[commit_hash]["scores"]["security"] += eval.security
+        commits_dict[commit_hash]["scores"]["structure"] += eval.structure
+        commits_dict[commit_hash]["scores"]["error_handling"] += eval.error_handling
+        commits_dict[commit_hash]["scores"]["documentation"] += eval.documentation
+        commits_dict[commit_hash]["scores"]["code_style"] += eval.code_style
+        commits_dict[commit_hash]["scores"]["overall_score"] += eval.overall_score
+
+        # 只计算一次工作时间（使用第一个文件的工作时间估算）
+        if hasattr(eval, 'estimated_hours') and eval.estimated_hours and not commits_dict[commit_hash]["has_estimated_hours"]:
+            commits_dict[commit_hash]["estimated_hours"] = eval.estimated_hours
+            commits_dict[commit_hash]["has_estimated_hours"] = True
+
+    # 按日期排序提交
+    sorted_commits = sorted(commits_dict.values(), key=lambda x: x["date"])
+
+    # 计算总体统计
+    total_files = len(sorted_results)
+    total_commits = len(sorted_commits)
     total_scores = {
         "readability": 0,
         "efficiency": 0,
@@ -3454,38 +4425,36 @@ def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult])
         "documentation": 0,
         "code_style": 0,
         "overall_score": 0,
-        "estimated_hours": 0,
     }
+    total_estimated_hours = 0
 
-    for result in sorted_results:
-        eval = result.evaluation
-        total_scores["readability"] += eval.readability
-        total_scores["efficiency"] += eval.efficiency
-        total_scores["security"] += eval.security
-        total_scores["structure"] += eval.structure
-        total_scores["error_handling"] += eval.error_handling
-        total_scores["documentation"] += eval.documentation
-        total_scores["code_style"] += eval.code_style
-        total_scores["overall_score"] += eval.overall_score
+    for commit in sorted_commits:
+        file_count = len(commit["files"])
+        # 计算每个提交的平均分
+        for key in total_scores.keys():
+            commit["scores"][key] = commit["scores"][key] / file_count
+            total_scores[key] += commit["scores"][key]
 
-        # Add estimated hours if available
-        if hasattr(eval, 'estimated_hours') and eval.estimated_hours:
-            total_scores["estimated_hours"] += eval.estimated_hours
+        # 累加工作时间
+        total_estimated_hours += commit["estimated_hours"]
 
-    avg_scores = {k: v / len(sorted_results) for k, v in total_scores.items()}
-    # Add trend analysis
-    markdown += "## Overview\n\n"
+    # 计算平均分
+    avg_scores = {k: v / total_commits for k, v in total_scores.items()} if total_commits > 0 else {k: 0 for k in total_scores.keys()}
+
+    # 添加概览
+    markdown += f"## Overview\n\n"
     markdown += f"- **Developer**: {author}\n"
     markdown += f"- **Time Range**: {start_date} to {end_date}\n"
-    markdown += f"- **Files Evaluated**: {len(sorted_results)}\n"
+    markdown += f"- **Commits Evaluated**: {total_commits}\n"
+    markdown += f"- **Files Evaluated**: {total_files}\n"
 
-    # Add total estimated working hours if available
-    if total_scores["estimated_hours"] > 0:
-        markdown += f"- **Total Estimated Working Hours**: {total_scores['estimated_hours']:.1f} hours\n"
+    # 添加总工作时间
+    if total_estimated_hours > 0:
+        markdown += f"- **Total Estimated Working Hours**: {total_estimated_hours:.1f} hours\n"
 
     markdown += "\n"
 
-    # Calculate average scores
+    # 添加平均分数
     markdown += "## Overall Scores\n\n"
     markdown += "| Dimension | Average Score |\n"
     markdown += "|-----------|---------------|\n"
@@ -3498,13 +4467,13 @@ def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult])
     markdown += f"| Code Style | {avg_scores['code_style']:.1f} |\n"
     markdown += f"| **Overall Score** | **{avg_scores['overall_score']:.1f}** |\n"
 
-    # Add average estimated working hours if available
-    if avg_scores["estimated_hours"] > 0:
-        markdown += f"| **Avg. Estimated Hours/File** | **{avg_scores['estimated_hours']:.1f}** |\n"
+    # 添加平均工作时间
+    if total_estimated_hours > 0:
+        markdown += f"| **Avg. Estimated Hours/Commit** | **{total_estimated_hours / total_commits:.1f}** |\n"
 
     markdown += "\n"
 
-    # Add quality assessment
+    # 添加质量评估
     overall_score = avg_scores["overall_score"]
     quality_level = ""
     if overall_score >= 9.0:
@@ -3520,46 +4489,73 @@ def generate_evaluation_markdown(evaluation_results: List[FileEvaluationResult])
 
     markdown += f"**Overall Code Quality**: {quality_level}\n\n"
 
-    # 添加各文件评价详情
-    markdown += "## 文件评价详情\n\n"
+    # 添加提交评价详情
+    markdown += "## 提交评价详情\n\n"
 
-    for idx, result in enumerate(sorted_results, 1):
-        markdown += f"### {idx}. {result.file_path}\n\n"
-        markdown += f"- **Commit**: {result.commit_hash[:8]} - {result.commit_message}\n"
-        markdown += f"- **Date**: {result.date.strftime('%Y-%m-%d %H:%M')}\n"
-        markdown += f"- **Scores**:\n\n"
-        eval = result.evaluation
+    for idx, commit in enumerate(sorted_commits, 1):
+        # 提交标题
+        short_hash = commit["hash"][:8]
+        markdown += f"### {idx}. Commit {short_hash}: {commit['message'].split('\n')[0]}\n\n"
+
+        # 提交基本信息
+        markdown += f"- **Full Hash**: {commit['hash']}\n"
+        markdown += f"- **Date**: {commit['date'].strftime('%Y-%m-%d %H:%M')}\n"
+        markdown += f"- **Author**: {commit['author']}\n"
+        markdown += f"- **Files Modified**: {len(commit['files'])}\n"
+
+        # 添加工作时间估算
+        if commit["has_estimated_hours"]:
+            markdown += f"- **Estimated Working Hours**: {commit['estimated_hours']:.1f}\n"
+
+        # 添加提交平均分数
+        markdown += "\n**Commit Scores**:\n\n"
         markdown += "| Dimension | Score |\n"
         markdown += "|----------|------|\n"
-        markdown += f"| Readability | {eval.readability} |\n"
-        markdown += f"| Efficiency & Performance | {eval.efficiency} |\n"
-        markdown += f"| Security | {eval.security} |\n"
-        markdown += f"| Structure & Design | {eval.structure} |\n"
-        markdown += f"| Error Handling | {eval.error_handling} |\n"
-        markdown += f"| Documentation & Comments | {eval.documentation} |\n"
-        markdown += f"| Code Style | {eval.code_style} |\n"
-        markdown += f"| **Overall Score** | **{eval.overall_score:.1f}** |\n"
+        markdown += f"| Readability | {commit['scores']['readability']:.1f} |\n"
+        markdown += f"| Efficiency & Performance | {commit['scores']['efficiency']:.1f} |\n"
+        markdown += f"| Security | {commit['scores']['security']:.1f} |\n"
+        markdown += f"| Structure & Design | {commit['scores']['structure']:.1f} |\n"
+        markdown += f"| Error Handling | {commit['scores']['error_handling']:.1f} |\n"
+        markdown += f"| Documentation & Comments | {commit['scores']['documentation']:.1f} |\n"
+        markdown += f"| Code Style | {commit['scores']['code_style']:.1f} |\n"
+        markdown += f"| **Overall Score** | **{commit['scores']['overall_score']:.1f}** |\n\n"
 
-        # Add estimated working hours if available
-        if hasattr(eval, 'estimated_hours') and eval.estimated_hours:
-            markdown += f"| **Estimated Working Hours** | **{eval.estimated_hours:.1f}** |\n"
+        # 添加修改的文件列表
+        markdown += "**Modified Files**:\n\n"
+        for file_idx, file in enumerate(commit["files"], 1):
+            file_path = file["file_path"]
+            eval = file["evaluation"]
 
-        markdown += "\n**Comments**:\n\n"
+            markdown += f"{file_idx}. **{file_path}**\n"
+            markdown += f"   - Score: {eval.overall_score:.1f}\n"
 
-        # Check if the comments contain the adjustment note
-        if "**Note**: Scores have been adjusted for differentiation" in eval.comments:
-            # Split the comments to separate the adjustment note
-            comments_parts = eval.comments.split("**Note**: Scores have been adjusted for differentiation")
-            main_comments = comments_parts[0].strip()
-            adjustment_note = "**Note**: Scores have been adjusted for differentiation" + comments_parts[1]
+            # 添加文件评论摘要（只显示前100个字符）
+            comments_summary = eval.comments[:100] + "..." if len(eval.comments) > 100 else eval.comments
+            comments_summary = comments_summary.replace("\n", " ").strip()
+            markdown += f"   - Comments: {comments_summary}\n\n"
 
-            # Add the main comments
-            markdown += f"{main_comments}\n\n"
+        # 添加详细评论
+        markdown += "**Detailed Comments**:\n\n"
+        for file_idx, file in enumerate(commit["files"], 1):
+            file_path = file["file_path"]
+            eval = file["evaluation"]
 
-            # Add the adjustment note with special formatting
-            markdown += f"<div style='background-color: #f8f9fa; padding: 10px; border-left: 4px solid #007bff; margin-bottom: 10px;'>{adjustment_note}</div>\n\n"
-        else:
-            markdown += f"{eval.comments}\n\n"
+            markdown += f"**File {file_idx}: {file_path}**\n\n"
+
+            # 检查评论是否包含调整说明
+            if "**Note**: Scores have been adjusted for differentiation" in eval.comments:
+                # 分离评论和调整说明
+                comments_parts = eval.comments.split("**Note**: Scores have been adjusted for differentiation")
+                main_comments = comments_parts[0].strip()
+                adjustment_note = "**Note**: Scores have been adjusted for differentiation" + comments_parts[1]
+
+                # 添加主要评论
+                markdown += f"{main_comments}\n\n"
+
+                # 添加调整说明（使用特殊格式）
+                markdown += f"<div style='background-color: #f8f9fa; padding: 10px; border-left: 4px solid #007bff; margin-bottom: 10px;'>{adjustment_note}</div>\n\n"
+            else:
+                markdown += f"{eval.comments}\n\n"
 
         markdown += "---\n\n"
 
