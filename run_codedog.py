@@ -1764,18 +1764,6 @@ async def evaluate_repository_code(
                                         logger.error(f"Error parsing debug JSON: {e}")
                                         print(f"DEBUG: Error parsing debug JSON: {e}")
 
-                        # 如果在控制台输出中找到了DEBUG信息，直接使用
-                        if readability == 0:
-                            # 这是一个硬编码的解决方案，用于测试
-                            print("DEBUG: Using hardcoded values from console output")
-                            readability = 7
-                            efficiency = 7
-                            security = 6
-                            structure = 7
-                            error_handling = 8
-                            documentation = 5
-                            code_style = 8
-                            overall_score = 7
 
                     summary_report += f"- **Readability**: {readability}\n"
                     summary_report += f"- **Efficiency & Performance**: {efficiency}\n"
@@ -1799,12 +1787,6 @@ async def evaluate_repository_code(
                         effective_code_lines = eval_result.get('effective_code_lines', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'effective_code_lines', 0)
                         non_effective_code_lines = eval_result.get('non_effective_code_lines', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'non_effective_code_lines', 0)
 
-                        # 如果在控制台输出中找到了DEBUG信息，直接使用
-                        if effective_code_lines == 0:
-                            # 这是一个硬编码的解决方案，用于测试
-                            print("DEBUG: Using hardcoded values for effective_code_lines")
-                            effective_code_lines = 147
-                            non_effective_code_lines = 89
 
                     summary_report += f"- **Effective Code Lines**: {effective_code_lines}\n"
                     summary_report += f"- **Non-effective Code Lines**: {non_effective_code_lines}\n"
@@ -1842,11 +1824,6 @@ async def evaluate_repository_code(
                                 except Exception as e:
                                     logger.error(f"Error parsing debug JSON: {e}")
                                     print(f"DEBUG: Error parsing debug JSON: {e}")
-
-                    # 使用硬编码的值
-                    effective_additions = 132
-                    effective_deletions = 15
-                    estimated_hours = 8
 
                     summary_report += f"- **Effective Additions**: {effective_additions}\n"
                     summary_report += f"- **Effective Deletions**: {effective_deletions}\n"
