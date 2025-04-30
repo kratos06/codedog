@@ -9,8 +9,25 @@ CodeDog 支持多种 AI 模型，可以根据需要选择不同的模型进行�
 | `gpt-3.5` | OpenAI 的 GPT-3.5 Turbo | 16K tokens | 低 | 一般代码评估，适合大多数场景 |
 | `gpt-4` | OpenAI 的 GPT-4 | 8K tokens | 中 | 复杂代码分析，需要更高质量的评估 |
 | `gpt-4o` | OpenAI 的 GPT-4o | 128K tokens | 中高 | 大型文件评估，需要处理大量上下文 |
-| `deepseek` | DeepSeek 的模型 | 根据配置而定 | 低 | 中文代码评估，本地化场景 |
-| `deepseek-r1` | DeepSeek 的 R1 模型 | 根据配置而定 | 低 | 推理能力更强的中文评估 |
+| `claude` | Anthropic 的 Claude 模型 | 200K tokens | 中高 | 大型代码库评估，需要处理超大上下文 |
+| `gemini` | Google 的 Gemini 模型 | 1M tokens | 中 | 大型代码库评估，代码理解能力强 |
+| `openrouter` | OpenRouter 统一 API | 取决于模型 | 取决于模型 | 灵活选择多种模型，一个 API 访问所有模型 |
+| `deepseek` | DeepSeek 的模型 | 64K tokens | 低 | 中文代码评估，本地化场景 |
+| `deepseek-r1` | DeepSeek 的 R1 模型 | 64K tokens | 低 | 推理能力更强的中文评估 |
+
+## OpenRouter 支持的模型
+
+通过 OpenRouter，您可以访问多种模型，包括：
+
+| 模型 ID | 描述 | 上下文窗口 | 相对成本 |
+|---------|------|-----------|---------|
+| `anthropic/claude-3-opus` | Claude 3 Opus | 200K tokens | 高 |
+| `anthropic/claude-3-sonnet` | Claude 3 Sonnet | 200K tokens | 中高 |
+| `google/gemini-1.5-pro` | Gemini 1.5 Pro | 1M tokens | 中 |
+| `openai/gpt-4o` | GPT-4o | 128K tokens | 中高 |
+| `meta/llama-3-70b-instruct` | Llama 3 70B | 8K tokens | 低 |
+
+完整的模型列表请参考 [OpenRouter 文档](https://openrouter.ai/docs#models)。
 
 ## 如何使用
 

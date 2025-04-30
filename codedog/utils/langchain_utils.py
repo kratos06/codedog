@@ -6,6 +6,8 @@ import os
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai.chat_models import AzureChatOpenAI, ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, ConfigDict
@@ -433,6 +435,73 @@ def load_deepseek_r1_llm():
     return llm
 
 
+@lru_cache(maxsize=1)
+def load_claude_llm():
+    """Load Claude model from Anthropic"""
+    # Get the specific Claude model name from environment variable or use default
+    claude_model = env.get("CLAUDE_MODEL", "claude-3-sonnet-20240229")
+
+    llm = ChatAnthropic(
+        api_key=env.get("ANTHROPIC_API_KEY"),
+        model=claude_model,
+        temperature=float(env.get("CLAUDE_TEMPERATURE", "0")),
+        max_tokens=int(env.get("CLAUDE_MAX_TOKENS", "4096")),
+        timeout=int(env.get("CLAUDE_TIMEOUT", "600")),  # 默认超时时间10分钟
+    )
+    return llm
+
+
+@lru_cache(maxsize=1)
+def load_gemini_llm():
+    """Load Gemini model from Google"""
+    # Get the specific Gemini model name from environment variable or use default
+    gemini_model = env.get("GEMINI_MODEL", "gemini-1.5-pro")
+
+    llm = ChatGoogleGenerativeAI(
+        api_key=env.get("GOOGLE_API_KEY"),
+        model=gemini_model,
+        temperature=float(env.get("GEMINI_TEMPERATURE", "0")),
+        max_output_tokens=int(env.get("GEMINI_MAX_TOKENS", "4096")),
+        timeout=int(env.get("GEMINI_TIMEOUT", "600")),  # 默认超时时间10分钟
+        convert_system_message_to_human=True,  # Gemini 需要将系统消息转换为人类消息
+    )
+    return llm
+
+
+@lru_cache(maxsize=1)
+def load_openrouter_llm():
+    """Load model from OpenRouter
+
+    OpenRouter is a unified API that provides access to various LLMs including:
+    - OpenAI models (GPT-4, GPT-3.5)
+    - Anthropic models (Claude)
+    - Google models (Gemini)
+    - Meta models (Llama)
+    - And many others
+
+    See https://openrouter.ai/docs for more details.
+    """
+    # Get the specific model name from environment variable or use default
+    # Default to Claude Opus as it has a large context window and good performance
+    openrouter_model = env.get("OPENROUTER_MODEL", "anthropic/claude-3-opus")
+
+    # Create a ChatOpenAI instance with OpenRouter base URL
+    llm = ChatOpenAI(
+        api_key=env.get("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
+        model=openrouter_model,
+        temperature=float(env.get("OPENROUTER_TEMPERATURE", "0")),
+        max_tokens=int(env.get("OPENROUTER_MAX_TOKENS", "4096")),
+        timeout=int(env.get("OPENROUTER_TIMEOUT", "600")),  # 默认超时时间10分钟
+        # Add OpenRouter specific HTTP headers
+        default_headers={
+            "HTTP-Referer": env.get("OPENROUTER_REFERER", "https://codedog.ai"),  # 应用的URL
+            "X-Title": env.get("OPENROUTER_TITLE", "CodeDog"),  # 应用名称
+        },
+    )
+    return llm
+
+
 def load_model_by_name(model_name: str) -> BaseChatModel:
     """Load a model by name
 
@@ -443,6 +512,9 @@ def load_model_by_name(model_name: str) -> BaseChatModel:
             - "gpt-4o" or "4o" for GPT-4o models
             - "deepseek" for DeepSeek models
             - "deepseek-r1" for DeepSeek R1 models
+            - "claude" or any string starting with "claude" for Claude models
+            - "gemini" or any string starting with "gemini" for Google's Gemini models
+            - "openrouter" for OpenRouter models (unified API for multiple LLMs)
             - Any full OpenAI model name (e.g., "gpt-3.5-turbo-16k", "gpt-4-turbo", etc.)
 
     Returns:
@@ -459,13 +531,16 @@ def load_model_by_name(model_name: str) -> BaseChatModel:
         "4o": load_gpt4o_llm,
         "deepseek": load_deepseek_llm,
         "deepseek-r1": load_deepseek_r1_llm,
+        "claude": load_claude_llm,
+        "gemini": load_gemini_llm,
+        "openrouter": load_openrouter_llm,
     }
 
     # Check for exact matches first
     if model_name in model_loaders:
         return model_loaders[model_name]()
 
-    # Handle OpenAI model names with pattern matching
+    # Handle model names with pattern matching
     if model_name.startswith("gpt-"):
         # Handle GPT-4o models
         if "4o" in model_name.lower():
@@ -481,5 +556,13 @@ def load_model_by_name(model_name: str) -> BaseChatModel:
             logger.warning(f"Unrecognized GPT model name: {model_name}, defaulting to GPT-3.5")
             return load_gpt_llm()
 
+    # Handle Claude model names
+    elif model_name.startswith("claude"):
+        return load_claude_llm()
+
+    # Handle Gemini model names
+    elif model_name.startswith("gemini"):
+        return load_gemini_llm()
+
     # If we get here, the model name is not recognized
-    raise ValueError(f"Unknown model name: {model_name}. Available models: {list(model_loaders.keys())} or any OpenAI model name starting with 'gpt-'.")
+    raise ValueError(f"Unknown model name: {model_name}. Available models: {list(model_loaders.keys())} or any OpenAI model name starting with 'gpt-', Claude model name starting with 'claude', Gemini model name starting with 'gemini', or use 'openrouter' for OpenRouter API.")

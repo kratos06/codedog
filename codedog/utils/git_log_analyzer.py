@@ -379,17 +379,17 @@ def get_commit_diff(
     if not os.path.exists(git_dir):
         raise ValueError(f"Not a git repository: {repo_path}")
 
-    # Get commit diff
+    # First, get the list of files and their status
     cmd = ["git", "show", "--name-status", "--numstat", "--pretty=format:", commit_hash]
     result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
 
     if result.returncode != 0:
         raise ValueError(f"Failed to get commit diff: {result.stderr}")
 
-    # Parse the diff output
+    # Parse the file list and status
     file_diffs = {}
-    current_file = None
-    current_diff = []
+    file_status = {}
+    file_stats = {}
 
     for line in result.stdout.splitlines():
         if not line.strip():
@@ -397,36 +397,99 @@ def get_commit_diff(
 
         # Check if line starts with a file status (e.g., "M\tfile.py")
         if line.startswith(("A\t", "M\t", "D\t")):
-            if current_file and current_diff:
-                file_diffs[current_file] = {
-                    "diff": "\n".join(current_diff),
-                    "status": current_status,
-                    "additions": current_additions,
-                    "deletions": current_deletions,
-                }
-            current_diff = []
-            current_status = line[0]
-            current_file = line[2:]
-            current_additions = 0
-            current_deletions = 0
+            status = line[0]
+            file_path = line[2:]
+            file_status[file_path] = status
 
         # Parse numstat line (e.g., "3\t2\tfile.py")
-        elif line[0].isdigit():
-            additions, deletions, filename = line.split("\t")
-            current_additions = int(additions)
-            current_deletions = int(deletions)
+        elif line[0].isdigit() or line.startswith('-'):
+            parts = line.split("\t")
+            if len(parts) == 3:
+                additions = parts[0]
+                deletions = parts[1]
+                filename = parts[2]
 
-        # Add to current diff
-        else:
-            current_diff.append(line)
+                # Handle binary files
+                if additions == '-' or deletions == '-':
+                    additions = 0
+                    deletions = 0
+                else:
+                    additions = int(additions)
+                    deletions = int(deletions)
 
-    # Add the last file
-    if current_file and current_diff:
-        file_diffs[current_file] = {
-            "diff": "\n".join(current_diff),
-            "status": current_status,
-            "additions": current_additions,
-            "deletions": current_deletions,
+                file_stats[filename] = {
+                    "additions": additions,
+                    "deletions": deletions
+                }
+
+    # Now get the actual diff content for each file
+    for file_path, status in file_status.items():
+        # Get the diff for this specific file
+        if status == 'A':  # New file
+            # For new files, we need to get the content
+            file_cmd = ["git", "show", f"{commit_hash}:{file_path}"]
+            try:
+                file_result = subprocess.run(file_cmd, cwd=repo_path, capture_output=True, text=True)
+                if file_result.returncode == 0:
+                    content = file_result.stdout
+                    # Format as a proper diff
+                    diff_content = f"diff --git a/{file_path} b/{file_path}\n"
+                    diff_content += f"new file mode 100644\n"
+                    diff_content += f"--- /dev/null\n"
+                    diff_content += f"+++ b/{file_path}\n"
+                    diff_content += f"@@ -0,0 +1,{len(content.splitlines())} @@\n"
+                    for line in content.splitlines():
+                        diff_content += f"+{line}\n"
+                else:
+                    diff_content = f"Error getting content for new file: {file_result.stderr}"
+            except Exception as e:
+                diff_content = f"Error getting content for new file: {str(e)}"
+        elif status == 'D':  # Deleted file
+            # For deleted files, we need to get the content from the parent commit
+            parent_cmd = ["git", "rev-parse", f"{commit_hash}^"]
+            try:
+                parent_result = subprocess.run(parent_cmd, cwd=repo_path, capture_output=True, text=True)
+                if parent_result.returncode == 0:
+                    parent_hash = parent_result.stdout.strip()
+                    file_cmd = ["git", "show", f"{parent_hash}:{file_path}"]
+                    file_result = subprocess.run(file_cmd, cwd=repo_path, capture_output=True, text=True)
+                    if file_result.returncode == 0:
+                        content = file_result.stdout
+                        # Format as a proper diff
+                        diff_content = f"diff --git a/{file_path} b/{file_path}\n"
+                        diff_content += f"deleted file mode 100644\n"
+                        diff_content += f"--- a/{file_path}\n"
+                        diff_content += f"+++ /dev/null\n"
+                        diff_content += f"@@ -1,{len(content.splitlines())} +0,0 @@\n"
+                        for line in content.splitlines():
+                            diff_content += f"-{line}\n"
+                    else:
+                        diff_content = f"Error getting content for deleted file: {file_result.stderr}"
+                else:
+                    diff_content = f"Error getting parent commit: {parent_result.stderr}"
+            except Exception as e:
+                diff_content = f"Error getting content for deleted file: {str(e)}"
+        else:  # Modified file
+            # For modified files, we can use git diff
+            diff_cmd = ["git", "diff", f"{commit_hash}^..{commit_hash}", "--", file_path]
+            try:
+                diff_result = subprocess.run(diff_cmd, cwd=repo_path, capture_output=True, text=True)
+                if diff_result.returncode == 0:
+                    diff_content = diff_result.stdout
+                else:
+                    diff_content = f"Error getting diff: {diff_result.stderr}"
+            except Exception as e:
+                diff_content = f"Error getting diff: {str(e)}"
+
+        # Get stats for this file
+        stats = file_stats.get(file_path, {"additions": 0, "deletions": 0})
+
+        # Add to file_diffs
+        file_diffs[file_path] = {
+            "diff": diff_content,
+            "status": status,
+            "additions": stats["additions"],
+            "deletions": stats["deletions"],
         }
 
     # Filter by file extensions
@@ -434,15 +497,15 @@ def get_commit_diff(
         filtered_diffs = {}
         for file_path, diff in file_diffs.items():
             file_ext = os.path.splitext(file_path)[1].lower()
-            
+
             # Skip if extension is in exclude list
             if exclude_extensions and file_ext in exclude_extensions:
                 continue
-                
+
             # Include if extension is in include list or no include list specified
             if not include_extensions or file_ext in include_extensions:
                 filtered_diffs[file_path] = diff
-                
+
         file_diffs = filtered_diffs
 
     return file_diffs

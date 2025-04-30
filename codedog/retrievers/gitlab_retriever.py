@@ -113,9 +113,11 @@ class GitlabRetriever(Retriever):
         )
 
     def _build_commit(self, git_commit: ProjectCommit) -> Commit:
+        # Use the full commit hash instead of short_id to ensure consistency
+        # The id field still uses short_id for backward compatibility
         return Commit(
             commit_id=int(git_commit.short_id, 16),
-            sha=git_commit.short_id,
+            sha=git_commit.id,  # Use full commit hash instead of short_id
             url=git_commit.web_url,
             message=git_commit.message,
         )
@@ -184,17 +186,19 @@ class GitlabRetriever(Retriever):
         end_sha = git_mr.diff_refs["head_sha"]
         mr_id = int(git_mr.get_id() or 0)
         blob_url = f"{self._repository.repository_url}/-/blob/{end_sha}/{full_name}"
+        # Ensure we're using full commit hashes for consistency
+        # The id fields still use the hex conversion for backward compatibility
         change_file = ChangeFile(
-            blob_id=int(end_sha, 16),
-            sha=end_sha,
+            blob_id=int(end_sha[:8], 16) if len(end_sha) > 8 else int(end_sha, 16),
+            sha=end_sha,  # Use full commit hash
             full_name=full_name,
             source_full_name=source_full_name,
             name=name,
             suffix=suffix,
             status=self._convert_status(diff),
             pull_request_id=mr_id,
-            start_commit_id=int(start_sha, 16),
-            end_commit_id=int(end_sha, 16),
+            start_commit_id=int(start_sha[:8], 16) if len(start_sha) > 8 else int(start_sha, 16),
+            end_commit_id=int(end_sha[:8], 16) if len(end_sha) > 8 else int(end_sha, 16),
             diff_url=blob_url,  # TODO
             blob_url=blob_url,
             diff_content=self._parse_and_build_diff_content(diff),

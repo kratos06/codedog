@@ -82,6 +82,9 @@ CodeDog 支持多种大语言模型，以满足不同的需求和预算：
 
 - **OpenAI GPT-3.5/GPT-4o**：通用模型，适合日常代码评审
 - **Azure OpenAI**：企业级安全性，适合需要数据合规的场景
+- **Claude**：超大上下文窗口，适合大型代码库评估
+- **Gemini**：Google 的大型语言模型，具有强大的代码理解能力
+- **OpenRouter**：统一 API，一个接口访问多种模型，灵活选择最适合的模型
 - **DeepSeek Chat/Reasoner**：专业模型，适合复杂代码分析
 
 可以为不同任务配置不同模型：
@@ -112,11 +115,11 @@ CODE_REVIEW_MODEL="deepseek"  # 代码评审
    ```
    # API密钥
    OPENAI_API_KEY=your_openai_api_key
-   
+
    # 模型选择
    CODE_REVIEW_MODEL=gpt-3.5
    PR_SUMMARY_MODEL=gpt-4o
-   
+
    # 邮件配置
    EMAIL_ENABLED=true
    NOTIFICATION_EMAILS=your_email@example.com
@@ -184,13 +187,13 @@ CodeDog 提供多种配置选项，可以通过环境变量或命令行参数设
 
 ## 6. 常见问题解答
 
-**Q: 如何处理大文件或大量文件的评审？**  
+**Q: 如何处理大文件或大量文件的评审？**
 A: CodeDog 会自动处理文件分割和批处理，但对于特别大的文件，可能需要增加超时设置或选择更快的模型。
 
-**Q: 如何解决 API 限制问题？**  
+**Q: 如何解决 API 限制问题？**
 A: 可以调整请求频率、使用缓存或升级 API 计划。对于 DeepSeek API 错误，系统会自动重试两次，如果仍然失败，则放弃评估并给出 0 分。
 
-**Q: 如何配置 Gmail SMTP？**  
+**Q: 如何配置 Gmail SMTP？**
 A: 需要在 Google 账户开启两步验证，然后创建应用专用密码用于 SMTP 认证。详细步骤请参考文档。
 
 ## 7. 技术规格
