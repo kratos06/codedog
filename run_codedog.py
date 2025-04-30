@@ -1188,6 +1188,19 @@ async def evaluate_repository_code(
     author_commits = normalized_author_commits
     print(f"After normalization: Found commits from {len(author_commits)} unique authors in the repository")
 
+    # 确保logs目录存在
+    os.makedirs("logs", exist_ok=True)
+
+    # 清空LLM日志文件，使用写入模式创建新文件
+    with open("logs/LLM_interactions.log", "w", encoding="utf-8") as f:
+        f.write(f"# LLM Interactions Log\n")
+        f.write(f"# Repository: {repo_path}\n")
+        f.write(f"# Date Range: {start_date} to {end_date}\n")
+        f.write(f"# Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+    logger.info("Initialized new LLM interaction log file")
+    print("Initialized new LLM interaction log file")
+
     # Initialize evaluator
     evaluator = DiffEvaluator(model)
 
@@ -2174,6 +2187,16 @@ def main():
         ]
     )
     logger.info("Starting CodeDog")
+
+    # 确保logs目录存在
+    os.makedirs("logs", exist_ok=True)
+
+    # 清空LLM日志文件，使用写入模式创建新文件
+    with open("logs/LLM_interactions.log", "w", encoding="utf-8") as f:
+        f.write(f"# LLM Interactions Log\n")
+        f.write(f"# Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+    logger.info("Initialized new LLM interaction log file")
 
     # Parse arguments
     args = parse_args()
