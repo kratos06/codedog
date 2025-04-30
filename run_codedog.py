@@ -1744,38 +1744,7 @@ async def evaluate_repository_code(
                         code_style = eval_result.get('code_style', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'code_style', 0)
                         overall_score = eval_result.get('overall_score', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'overall_score', 0)
 
-                        # 尝试从DEBUG输出中提取评分
-                        debug_json = None
-                        debug_output = None
-
-                        # 检查是否有DEBUG输出
-                        for key in eval_result.keys() if isinstance(eval_result, dict) else []:
-                            if isinstance(eval_result[key], str) and 'DEBUG: Whole commit evaluation' in eval_result[key]:
-                                debug_output = eval_result[key]
-                                break
-
-                        # 如果在eval_result的值中没有找到，尝试在字符串表示中查找
-                        if not debug_output and isinstance(eval_result, dict):
-                            debug_str = str(eval_result)
-                            if 'DEBUG: Whole commit evaluation' in debug_str:
-                                debug_start = debug_str.find('DEBUG: Whole commit evaluation: {')
-                                if debug_start != -1:
-                                    debug_json_str = debug_str[debug_start + len('DEBUG: Whole commit evaluation: '):]
-                                    try:
-                                        import ast
-                                        debug_json = ast.literal_eval(debug_json_str)
-                                        print(f"DEBUG: Found scores in debug output: {debug_json}")
-                                        readability = debug_json.get('readability', readability)
-                                        efficiency = debug_json.get('efficiency', efficiency)
-                                        security = debug_json.get('security', security)
-                                        structure = debug_json.get('structure', structure)
-                                        error_handling = debug_json.get('error_handling', error_handling)
-                                        documentation = debug_json.get('documentation', documentation)
-                                        code_style = debug_json.get('code_style', code_style)
-                                        overall_score = debug_json.get('overall_score', overall_score)
-                                    except Exception as e:
-                                        logger.error(f"Error parsing debug JSON: {e}")
-                                        print(f"DEBUG: Error parsing debug JSON: {e}")
+                        # 不尝试从DEBUG输出中提取评分，直接使用LLM返回的值
 
 
                     summary_report += f"- **Readability**: {readability}\n"
@@ -1790,13 +1759,13 @@ async def evaluate_repository_code(
                     # 添加代码分析部分
                     summary_report += f"#### Code Analysis\n\n"
 
-                    # 首先尝试从whole_commit_evaluation中获取评分
+                    # 直接从LLM返回的JSON中获取评分，不做任何计算或估算
                     if isinstance(eval_result, dict) and 'whole_commit_evaluation' in eval_result:
                         whole_eval = eval_result['whole_commit_evaluation']
                         effective_code_lines = whole_eval.get('effective_code_lines', 0)
                         non_effective_code_lines = whole_eval.get('non_effective_code_lines', 0)
                     else:
-                        # 使用更安全的方式访问字段
+                        # 直接从LLM返回的JSON中获取评分
                         effective_code_lines = eval_result.get('effective_code_lines', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'effective_code_lines', 0)
                         non_effective_code_lines = eval_result.get('non_effective_code_lines', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'non_effective_code_lines', 0)
 
@@ -1804,39 +1773,10 @@ async def evaluate_repository_code(
                     summary_report += f"- **Effective Code Lines**: {effective_code_lines}\n"
                     summary_report += f"- **Non-effective Code Lines**: {non_effective_code_lines}\n"
 
-                    # 检查effective_additions和effective_deletions是否存在
-                    has_effective_additions = 'effective_additions' in eval_result if isinstance(eval_result, dict) else hasattr(eval_result, 'effective_additions')
-                    has_effective_deletions = 'effective_deletions' in eval_result if isinstance(eval_result, dict) else hasattr(eval_result, 'effective_deletions')
-
-                    # 尝试从DEBUG输出中提取评分
-                    debug_json = None
-                    if isinstance(eval_result, dict):
-                        # 打印完整的eval_result，以便调试
-                        print(f"DEBUG: Full eval_result: {eval_result}")
-
-                        # 检查是否包含DEBUG输出
-                        debug_str = str(eval_result)
-                        if 'DEBUG: Whole commit evaluation' in debug_str:
-                            print(f"DEBUG: Found debug output in eval_result")
-                            debug_start = debug_str.find('DEBUG: Whole commit evaluation: {')
-                            if debug_start != -1:
-                                debug_json_str = debug_str[debug_start + len('DEBUG: Whole commit evaluation: '):]
-                                print(f"DEBUG: Extracted debug_json_str: {debug_json_str[:100]}...")
-                                try:
-                                    import ast
-                                    debug_json = ast.literal_eval(debug_json_str)
-                                    print(f"DEBUG: Parsed debug_json: {debug_json}")
-                                    if 'effective_additions' in debug_json:
-                                        has_effective_additions = True
-                                        print(f"DEBUG: Found effective_additions: {debug_json['effective_additions']}")
-                                    if 'effective_deletions' in debug_json:
-                                        has_effective_deletions = True
-                                        print(f"DEBUG: Found effective_deletions: {debug_json['effective_deletions']}")
-                                    if 'readability' in debug_json:
-                                        print(f"DEBUG: Found readability: {debug_json['readability']}")
-                                except Exception as e:
-                                    logger.error(f"Error parsing debug JSON: {e}")
-                                    print(f"DEBUG: Error parsing debug JSON: {e}")
+                    # 直接从LLM返回的JSON中获取评分，不做任何计算或估算
+                    effective_additions = eval_result.get('effective_additions', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'effective_additions', 0)
+                    effective_deletions = eval_result.get('effective_deletions', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'effective_deletions', 0)
+                    estimated_hours = eval_result.get('estimated_hours', 0) if isinstance(eval_result, dict) else getattr(eval_result, 'estimated_hours', 0)
 
                     summary_report += f"- **Effective Additions**: {effective_additions}\n"
                     summary_report += f"- **Effective Deletions**: {effective_deletions}\n"
@@ -1867,12 +1807,8 @@ async def evaluate_repository_code(
                                 file_documentation = file_eval.get('documentation', 0) if isinstance(file_eval, dict) else getattr(file_eval, 'documentation', 0)
                                 file_code_style = file_eval.get('code_style', 0) if isinstance(file_eval, dict) else getattr(file_eval, 'code_style', 0)
                                 file_overall_score = file_eval.get('overall_score', 0) if isinstance(file_eval, dict) else getattr(file_eval, 'overall_score', 0)
-                                # 尝试获取effective_lines或effective_additions
-                                file_effective_lines = 0
-                                if 'effective_lines' in file_eval if isinstance(file_eval, dict) else hasattr(file_eval, 'effective_lines'):
-                                    file_effective_lines = file_eval.get('effective_lines', 0) if isinstance(file_eval, dict) else getattr(file_eval, 'effective_lines', 0)
-                                elif 'effective_additions' in file_eval if isinstance(file_eval, dict) else hasattr(file_eval, 'effective_additions'):
-                                    file_effective_lines = file_eval.get('effective_additions', 0) if isinstance(file_eval, dict) else getattr(file_eval, 'effective_additions', 0)
+                                # 直接使用effective_additions作为effective_lines
+                                file_effective_lines = file_eval.get('effective_additions', 0) if isinstance(file_eval, dict) else getattr(file_eval, 'effective_additions', 0)
 
                                 summary_report += f"- **Readability**: {file_readability}\n"
                                 summary_report += f"- **Efficiency**: {file_efficiency}\n"
@@ -1925,24 +1861,8 @@ async def evaluate_repository_code(
             logger.error(error_msg, exc_info=True)
             print(f"\n❌ Error evaluating {author}: {str(e)}")
 
-            # Calculate default working hours based on code stats
-            total_added = code_stats.get('total_added_lines', 0)
-            total_deleted = code_stats.get('total_deleted_lines', 0)
-            total_effective = code_stats.get('total_effective_lines', 0)
-
-            # Use the DiffEvaluator's default hours estimation method
-            default_hours = 0
-            try:
-                # Create a temporary evaluator to use its _estimate_default_hours method
-                temp_evaluator = DiffEvaluator(None)
-                default_hours = temp_evaluator._estimate_default_hours(total_added, total_deleted)
-                logger.info(f"Calculated default working hours for {author}: {default_hours}")
-            except Exception as calc_error:
-                logger.error(f"Error calculating default working hours: {str(calc_error)}")
-                # Fallback to a simple calculation if the estimator fails
-                total_changes = total_added + total_deleted
-                default_hours = max(0.5, min(40, total_changes / 50))
-                logger.info(f"Using fallback working hours calculation: {default_hours}")
+            # 不计算默认工作时间，直接使用0
+            logger.info(f"Not calculating default working hours for {author}, using 0 instead")
 
             # Create an error report for this author
             error_report = f"# Evaluation Error for {author}\n\n"
