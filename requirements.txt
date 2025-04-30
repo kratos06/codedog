@@ -1,5 +1,33 @@
-modelcontextprotocol-github>=0.1.0
+# Core dependencies
+langchain>=0.3.21
+langchain-community>=0.3.20
+langchain-core>=0.3.49
+langchain-text-splitters>=0.3.7
+langsmith>=0.1.17
+
+# Model integrations
+langchain-openai>=0.3.11
+langchain-anthropic>=0.1.1  # For Claude models
+langchain-google-genai>=0.0.6  # For Gemini models
+openai>=1.37.1
+tiktoken>=0.7.0  # For OpenAI token counting
+
+# Platform integrations
 PyGithub>=2.1.1
 python-gitlab>=4.4.0
+# modelcontextprotocol-github>=0.1.0  # 注释掉有问题的依赖
+
+# Utilities
+pydantic>=2.8.2
+pydantic-core>=2.20.1
+python-dotenv>=1.0.1
+requests>=2.31.0
 aiohttp>=3.9.3
-python-dateutil>=2.8.2 
+python-dateutil>=2.8.2
+unidiff>=0.7.5
+PyYAML>=5.3
+
+# Optional dependencies for specific features
+# Uncomment if needed
+# fastapi>=0.100.1  # For API server
+# uvicorn>=0.23.1  # For API server
